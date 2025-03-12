@@ -20,6 +20,9 @@ class Operand:
     def is_register(self):
         return self.is_r8() or self.is_r16()
 
+    def is_u3(self):
+        return self.name in (str(x) for x in range(8))
+
     def is_r8(self):
         return self.name in ("A", "B", "C", "D", "E", "H", "L")
 
@@ -32,6 +35,7 @@ class Operand:
     def to_zig(self):
         assert(not self.is_condition_code())
 
+        value = None
         op_type = "blubb"
         rn = ""
         if self.is_r8():
@@ -42,6 +46,9 @@ class Operand:
             rn = f".register = RegisterName.{self.name}"
         elif self.name.startswith("$"):
             op_type = "vec"
+        elif self.is_u3():
+            op_type = "bit3"
+            value = int(self.name)
         elif "8" in self.name:
             op_type = "imm8"
         elif "16" in self.name:
@@ -49,12 +56,17 @@ class Operand:
         elif self.name == "unused":
             op_type = "unused"
 
+        if op_type == "blubb":
+            print(self)
         assert(op_type != "blubb")
 
         t = f".t=OperandType.{op_type}"
-        rel = f" .relative = { 'false' if self.immediate else 'true' }"
+        rel = f".relative = { 'false' if self.immediate else 'true' }"
 
         args = [t, rel]
+        if value is not None:
+            args.append(f".value = {value}")
+
         if rn:
             args.append(rn)
 
@@ -87,15 +99,15 @@ class Instruction:
         assert(len(operands) == 3)
 
         op = self.mnemonic.upper()
-        return f"Instruction{{ .op = OpType.{op}, .operands = .{{ {', '.join(operands)} }}, .num_operands = {num_operands} }}"
+        return f"Instruction{{ .op = OpType.{op}, .operands = .{{ {', '.join(operands)} }}, .num_operands = {num_operands}, .bytes = {self.bytes} }}"
 
 def generate_opcodes(instructions: list[Instruction]):
     mnemonics = sorted(set(i.mnemonic.upper() for i in instructions))
     return f"const OpType = enum {{ {', '.join(mnemonics)} }};"
 
-def generate_decoder(instructions: list[Instruction]):
+def generate_decoder(instructions: list[Instruction], fname: str):
     result = []
-    result += ["pub fn decode_instruction(opcode: u8) Instruction {"]
+    result += [f"pub fn {fname}(opcode: u8) Instruction {{"]
     result += ["    const result = switch (opcode) {"]
 
     for i in instructions:
@@ -109,9 +121,9 @@ def generate_decoder(instructions: list[Instruction]):
 
     return '\n'.join(result)
 
-def generate_opcode_to_str(instructions: list[Instruction]):
+def generate_opcode_to_str(instructions: list[Instruction], fname: str):
     result = []
-    result += ["pub fn opcode_to_str(opcode: u8) []const u8 {"]
+    result += [f"pub fn {fname}(opcode: u8) []const u8 {{"]
     result += ["    switch (opcode) {"]
 
     for i in instructions:
@@ -122,9 +134,9 @@ def generate_opcode_to_str(instructions: list[Instruction]):
 
     return '\n'.join(result)
 
-def generate(definitions: dict, args: argparse.Namespace):
+def parse_instructions(definitions: dict):
     instructions: list[Instruction] = []
-    for value, op in definitions["unprefixed"].items():
+    for value, op in definitions.items():
         operands = []
         for operand in op["operands"]:
             operands.append(Operand(**operand))
@@ -139,10 +151,16 @@ def generate(definitions: dict, args: argparse.Namespace):
     for i in instructions:
         i.fix_mnemonic()
 
+    return instructions
+
+def generate(definitions: dict, args: argparse.Namespace):
+    instructions: list[Instruction] = parse_instructions(definitions["unprefixed"])
+    prefixed_instructions: list[Instruction] = parse_instructions(definitions["cbprefixed"])
+
     header = """pub const RegisterName = enum { A, B, C, D, E, H, L, BC, DE, HL, SP, AF };
-pub const OperandType = enum { unused, reg8, reg16, imm8, imm16, vec, };
-pub const Operand = struct { t: OperandType, register: RegisterName = RegisterName.A, immediate: u16 = 0, relative: bool = false, };
-pub const Instruction = struct { op: OpType, operands: [3]Operand, num_operands: u8 };
+pub const OperandType = enum { unused, reg8, reg16, imm8, imm16, bit3, vec, };
+pub const Operand = struct { t: OperandType, register: RegisterName = RegisterName.A, value: u16 = 0, relative: bool = false, };
+pub const Instruction = struct { op: OpType, operands: [3]Operand, num_operands: u8 , bytes: u8};
 """
 
     op_types = f"pub {generate_opcodes(instructions)}"
@@ -150,8 +168,10 @@ pub const Instruction = struct { op: OpType, operands: [3]Operand, num_operands:
     with open(args.output, "wt") as f:
         f.write(op_types + '\n')
         f.write(header)
-        f.write(generate_decoder(instructions) + '\n')
-        f.write(generate_opcode_to_str(instructions))
+        f.write(generate_decoder(instructions, "decode_instruction") + '\n')
+        f.write(generate_decoder(prefixed_instructions, "decode_instruction_cb") + '\n')
+        f.write(generate_opcode_to_str(instructions, "opcode_to_str"))
+        f.write(generate_opcode_to_str(prefixed_instructions, "opcode_to_str_cb"))
 
 
 def main():
