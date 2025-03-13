@@ -10,9 +10,10 @@ pub const Bus = struct {
         return result;
     }
 
-    pub fn read_ptr(self: *Bus, address: u16) [*]const u8 {
+    /// Turn a GB address into a host pointer that we can read from or write to.
+    pub fn addr_to_ptr(self: *Bus, address: u16) [*]const u8 {
         const result = 0xff;
-        std.log.debug("Bus::read({}) -> ", .{ address, result });
+        std.log.debug("Bus::addr_to_ptr({}) -> {}", .{ address, result });
         return &self.fake_memory;
     }
 

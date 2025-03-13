@@ -3,6 +3,12 @@ import argparse
 import pathlib
 from dataclasses import dataclass
 
+OUTPUT_HEADER = """pub const Register = enum { A, F, B, C, D, E, H, L, AF, BC, DE, HL, SP, };
+pub const OperandType = enum { unused, reg8, reg16, imm8, imm16, bit3, vec, };
+pub const Operand = struct { t: OperandType, register: Register = Register.A, value: u16 = 0, relative: bool = false, };
+pub const Instruction = struct { opcode: u8 = 0, op: OpType, operands: [3]Operand, num_operands: u8 , bytes: u8};
+"""
+
 @dataclass
 class Operand:
     name: str
@@ -40,10 +46,10 @@ class Operand:
         rn = ""
         if self.is_r8():
             op_type = "reg8"
-            rn = f".register = RegisterName.{self.name}"
+            rn = f".register = Register.{self.name}"
         elif self.is_r16():
             op_type = "reg16"
-            rn = f".register = RegisterName.{self.name}"
+            rn = f".register = Register.{self.name}"
         elif self.name.startswith("$"):
             op_type = "vec"
         elif self.is_u3():
@@ -62,6 +68,7 @@ class Operand:
 
         t = f".t=OperandType.{op_type}"
         rel = f".relative = { 'false' if self.immediate else 'true' }"
+        # inc_dec_mode = f".idm = {'+1' if self.increment else '-1' if self.decrement else '0'}"
 
         args = [t, rel]
         if value is not None:
@@ -99,7 +106,7 @@ class Instruction:
         assert(len(operands) == 3)
 
         op = self.mnemonic.upper()
-        return f"Instruction{{ .op = OpType.{op}, .operands = .{{ {', '.join(operands)} }}, .num_operands = {num_operands}, .bytes = {self.bytes} }}"
+        return f"Instruction{{ .opcode = 0x{self.value:02x}, .op = OpType.{op}, .operands = .{{ {', '.join(operands)} }}, .num_operands = {num_operands}, .bytes = {self.bytes} }}"
 
 def generate_opcodes(instructions: list[Instruction]):
     mnemonics = sorted(set(i.mnemonic.upper() for i in instructions))
@@ -157,17 +164,11 @@ def generate(definitions: dict, args: argparse.Namespace):
     instructions: list[Instruction] = parse_instructions(definitions["unprefixed"])
     prefixed_instructions: list[Instruction] = parse_instructions(definitions["cbprefixed"])
 
-    header = """pub const RegisterName = enum { A, B, C, D, E, H, L, BC, DE, HL, SP, AF };
-pub const OperandType = enum { unused, reg8, reg16, imm8, imm16, bit3, vec, };
-pub const Operand = struct { t: OperandType, register: RegisterName = RegisterName.A, value: u16 = 0, relative: bool = false, };
-pub const Instruction = struct { op: OpType, operands: [3]Operand, num_operands: u8 , bytes: u8};
-"""
-
     op_types = f"pub {generate_opcodes(instructions)}"
 
     with open(args.output, "wt") as f:
         f.write(op_types + '\n')
-        f.write(header)
+        f.write(OUTPUT_HEADER)
         f.write(generate_decoder(instructions, "decode_instruction") + '\n')
         f.write(generate_decoder(prefixed_instructions, "decode_instruction_cb") + '\n')
         f.write(generate_opcode_to_str(instructions, "opcode_to_str"))
