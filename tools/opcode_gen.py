@@ -108,8 +108,9 @@ class Instruction:
         op = self.mnemonic.upper()
         return f"Instruction{{ .opcode = 0x{self.value:02x}, .op = OpType.{op}, .operands = .{{ {', '.join(operands)} }}, .num_operands = {num_operands}, .bytes = {self.bytes} }}"
 
-def generate_opcodes(instructions: list[Instruction]):
-    mnemonics = sorted(set(i.mnemonic.upper() for i in instructions))
+def generate_opcodes(instr: list[Instruction], instr_cb: list[Instruction]):
+    all = instr + instr_cb
+    mnemonics = sorted(set(i.mnemonic.upper() for i in all))
     return f"const OpType = enum {{ {', '.join(mnemonics)} }};"
 
 def generate_decoder(instructions: list[Instruction], fname: str):
@@ -164,7 +165,7 @@ def generate(definitions: dict, args: argparse.Namespace):
     instructions: list[Instruction] = parse_instructions(definitions["unprefixed"])
     prefixed_instructions: list[Instruction] = parse_instructions(definitions["cbprefixed"])
 
-    op_types = f"pub {generate_opcodes(instructions)}"
+    op_types = f"pub {generate_opcodes(instructions, prefixed_instructions)}"
 
     with open(args.output, "wt") as f:
         f.write(op_types + '\n')

@@ -1,4 +1,4 @@
-pub const OpType = enum { ADC, ADD, AND, CALL, CCF, CP, CPL, DAA, DEC, DI, EI, HALT, ILLEGAL, INC, JP, JR, LD, LDH, NOP, OR, POP, PREFIX, PUSH, RET, RETI, RLA, RLCA, RRA, RRCA, RST, SBC, SCF, STOP, SUB, XOR };
+pub const OpType = enum { ADC, ADD, AND, BIT, CALL, CCF, CP, CPL, DAA, DEC, DI, EI, HALT, ILLEGAL, INC, JP, JR, LD, LDH, NOP, OR, POP, PREFIX, PUSH, RES, RET, RETI, RL, RLA, RLC, RLCA, RR, RRA, RRC, RRCA, RST, SBC, SCF, SET, SLA, SRA, SRL, STOP, SUB, SWAP, XOR };
 pub const Register = enum { A, F, B, C, D, E, H, L, AF, BC, DE, HL, SP, };
 pub const OperandType = enum { unused, reg8, reg16, imm8, imm16, bit3, vec, };
 pub const Operand = struct { t: OperandType, register: Register = Register.A, value: u16 = 0, relative: bool = false, };

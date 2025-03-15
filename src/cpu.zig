@@ -2,7 +2,7 @@ const std = @import("std");
 const sys = @import("sys.zig");
 const Bus = sys.Bus;
 
-const decoder = @import("instructions_generated.zig");
+pub const decoder = @import("instructions_generated.zig");
 const Instruction = decoder.Instruction;
 const OpType = decoder.OpType;
 const Operand = decoder.Operand;
@@ -126,8 +126,8 @@ const RegFile = struct {
     }
 };
 
-const Cpu = struct {
-    rf: RegFile,
+pub const Cpu = struct {
+    rf: RegFile = .{},
     bus: *Bus,
 
     fn decode_next(self: *Cpu) struct { Instruction, bool } {
@@ -198,31 +198,47 @@ const Cpu = struct {
         }
     }
 
-    fn op_ld(self: *Cpu, i: Instruction) void {
+    pub fn op_ld(self: *Cpu, i: Instruction) void {
         if (i.operands[0].t == OperandType.reg16 and !i.operands[0].relative) {
             self.op_ld_dst_reg16(i);
+        } else if (i.opcode == 0x08) {
+            self.op_ld_sp_to_mem(i);
         } else {
             self.op_ld_dest_u8(i);
         }
+    }
+
+    fn op_ld_sp_to_mem(self: *Cpu, i: Instruction) void {
+        const addr = i.operands[0].value;
+        self.bus.write(addr, @truncate(self.rf.SP & 0x00ff));
+        self.bus.write(addr + 1, @truncate(self.rf.SP >> 8));
     }
 
     fn op_ld_dst_reg16(self: *Cpu, i: Instruction) void {
         if (i.operands[1].t == OperandType.imm16) {
             self.rf.set(u16, i.operands[0].register, i.operands[1].value);
         } else if (i.opcode == 0xf8) {
-            const e8: i8 = @intCast(i.operands[2].value);
-            const set_h = self.rf.SP <= 15 and e8 > (15 - self.rf.SP);
-            const set_c = e8 > (255 - self.rf.SP);
+            const offset: i16 = @bitCast(i.operands[2].value);
+            if (offset < -128 or offset > 127) unreachable; // sanity check that the offset is i8
+            // If, bits above [3, 7] are not set yet, and will be set afterwards, set the flag.
+            const set_h = self.rf.SP <= 15 and offset > (15 - self.rf.SP);
+            const set_c = self.rf.SP <= 255 and offset > (255 - self.rf.SP);
+
+            std.log.debug("load special sp {}", .{self.rf.SP});
 
             self.rf.flag_set(set_h, RegFile.F.H);
             self.rf.flag_set(set_c, RegFile.F.C);
-            if (e8 >= 0) {
-                self.rf.SP +%= @as(u8, @intCast(e8));
+            if (offset >= 0) {
+                self.rf.HL = self.rf.SP +% @as(u16, @bitCast(offset));
             } else {
-                const res, _ = @subWithOverflow(self.rf.SP, @as(u8, @intCast(-e8)));
-                self.rf.SP = res;
+                const tmp: u16 = @abs(offset);
+                std.log.debug("tmp = {}", .{tmp});
+                self.rf.HL = self.rf.SP -% tmp;
             }
-            // self.rf.HL = self.rf.SP +% e8;
+
+            std.log.debug("load special offset {}", .{offset});
+            std.log.debug("load special sp {}", .{self.rf.SP});
+            std.log.debug("load special hl {}", .{self.rf.HL});
         } else if (i.operands[1].t == OperandType.reg16) {
             self.rf.set(u16, i.operands[0].register, self.rf.get(i.operands[1].register, u16));
         }
@@ -275,24 +291,9 @@ test "R/W GP Registers" {
     const R = RegName;
 
     for (
-        [_]R{
-            R.AF,
-            R.BC,
-            R.DE,
-            R.HL,
-        },
-        [_]R{
-            R.A,
-            R.B,
-            R.D,
-            R.H,
-        },
-        [_]R{
-            R.F,
-            R.C,
-            R.E,
-            R.L,
-        },
+        [_]R{ R.AF, R.BC, R.DE, R.HL },
+        [_]R{ R.A, R.B, R.D, R.H },
+        [_]R{ R.F, R.C, R.E, R.L },
     ) |ab, a, b| {
         const ptr = cpu.rf.get_ptr(ab, u16);
         ptr.* = 0x1234;
@@ -314,7 +315,6 @@ test "Instruction Decode" {
     const i = decoder.decode_instruction(0x00);
     try testing.expectEqual(decoder.OpType.NOP, i.op);
     try testing.expectEqual(0, i.num_operands);
-    std.log.debug("{}", .{i});
 }
 
 test "Operand Load Immediate" {
@@ -361,31 +361,66 @@ test "LD r8 imm8" {
 }
 
 test "LD r8 [r16]" {
-    //  TODO
+    const opcodes = [_]u8{ 0x46, 0x56, 0x66, 0x4e, 0x5e, 0x6e };
+    const value: u8 = 0xbe;
+    const addr: u16 = 0x0000;
+
+    var bus = Bus{};
+    var cpu = Cpu{ .bus = &bus, .rf = RegFile{} };
+
+    for (opcodes) |opcode| {
+        const i = decoder.decode_instruction(opcode);
+
+        cpu.rf.set(u16, i.operands[1].register, addr);
+        bus.write(addr, value);
+
+        cpu.op_ld(i);
+        try testing.expectEqual(value, cpu.rf.get(i.operands[0].register, u8));
+    }
 }
 
 test "LD r8 [imm16]" {
-    //  TODO
+    const opcodes = [_]u8{0xfa};
+    const value: u8 = 0xbe;
+    const addr: u16 = 0x0000;
+
+    var bus = Bus{};
+    var cpu = Cpu{ .bus = &bus, .rf = RegFile{} };
+
+    for (opcodes) |opcode| {
+        var i = decoder.decode_instruction(opcode);
+
+        i.operands[1].value = addr;
+        bus.write(addr, value);
+
+        cpu.op_ld(i);
+        try testing.expectEqual(value, cpu.rf.get(i.operands[0].register, u8));
+    }
 }
 
 // --------- loads into [r16]
 
 test "LD [r16] imm8" {
-    // TODO
+    const opcodes = [_]u8{0x36};
+    const value: u8 = 0xbe;
+    const addr: u16 = 0x0000;
+
+    var bus = Bus{};
+    var cpu = Cpu{ .bus = &bus, .rf = RegFile{} };
+
+    for (opcodes) |opcode| {
+        var i = decoder.decode_instruction(opcode);
+
+        cpu.rf.set(u16, i.operands[0].register, addr);
+        i.operands[1].value = value;
+
+        cpu.op_ld(i);
+        try testing.expectEqual(value, bus.read(addr));
+    }
 }
 
 test "LD [r16], r8" {
-    const opcodes = [_]u8{
-        0x02,
-        0x12,
-        0x70,
-        0x71,
-        0x72,
-        0x73,
-        // 0x74, LD [HL], H doesn't work with this setup
-        // 0x75, LD [HL], L doesn't work with this setup
-        0x77,
-    };
+    const opcodes = [_]u8{ 0x02, 0x12, 0x70, 0x71, 0x72, 0x73, 0x77 };
     const value: u8 = 0xbe;
     const addr: u16 = 0x0000;
 
@@ -408,14 +443,68 @@ test "LD [r16], r8" {
     }
 }
 
+test "LD [HL], r8 (HL overlap)" {
+    const opcodes = [_]u8{ 0x74, 0x75 };
+    const value: u8 = 0x00;
+    const addr: u16 = 0x0000;
+
+    var bus = Bus{};
+    var cpu = Cpu{ .bus = &bus, .rf = RegFile{} };
+
+    for (opcodes) |opcode| {
+        const i = decoder.decode_instruction(opcode);
+        cpu.rf.set(u8, i.operands[1].register, value);
+        cpu.rf.set(u16, i.operands[0].register, addr);
+
+        bus.write(addr, 0xfe);
+        try testing.expectEqual(0xfe, bus.read(addr));
+
+        cpu.op_ld(i);
+        try testing.expectEqual(value, bus.read(addr));
+    }
+}
+
 // --------- loads into [imm16]
 
 test "LD [imm16] A" {
-    // TODOk
+    const opcode = 0xea;
+    const value: u8 = 0xbe;
+    const addr: u16 = 0x0000;
+
+    var bus = Bus{};
+    var cpu = Cpu{ .bus = &bus, .rf = RegFile{} };
+
+    var i = decoder.decode_instruction(opcode);
+    i.operands[0].value = addr;
+    cpu.rf.set(u8, i.operands[1].register, value);
+
+    bus.write(addr, 0x00);
+    try testing.expectEqual(0, bus.read(addr));
+
+    cpu.op_ld(i);
+    try testing.expectEqual(value, bus.read(addr));
 }
 
 test "LD [imm16] SP" {
-    //  TODO
+    const opcode = 0x08;
+    const value: u16 = 0xbeef;
+    const addr: u16 = 0x0000;
+
+    var bus = Bus{};
+    var cpu = Cpu{ .bus = &bus, .rf = RegFile{} };
+
+    var i = decoder.decode_instruction(opcode);
+    i.operands[0].value = addr;
+    cpu.rf.set(u16, i.operands[1].register, value);
+
+    bus.write(addr, 0x00);
+    bus.write(addr + 1, 0x01);
+    try testing.expectEqual(0, bus.read(addr));
+    try testing.expectEqual(1, bus.read(addr + 1));
+
+    cpu.op_ld(i);
+    try testing.expectEqual(0xef, bus.read(addr));
+    try testing.expectEqual(0xbe, bus.read(addr + 1));
 }
 
 // --------- loads into r16
@@ -437,10 +526,71 @@ test "LD r16 imm16" {
     }
 }
 
+test "LD SP HL" {
+    const opcode = 0xf9;
+    const value: u16 = 0xbeef;
+
+    var bus = Bus{};
+    var cpu = Cpu{ .bus = &bus, .rf = RegFile{} };
+
+    const i = decoder.decode_instruction(opcode);
+    cpu.rf.HL = value;
+    cpu.rf.SP = 0;
+
+    try testing.expectEqual(0x0000, cpu.rf.SP);
+
+    cpu.op_ld(i);
+    try testing.expectEqual(0xbeef, cpu.rf.SP);
+}
+
+test "LD HL SP+e8" {
+    const Config = struct {
+        base: u16,
+        offset: i8,
+        expect: u16,
+        expect_h: bool = false,
+        expect_c: bool = false,
+    };
+
+    const opcode = 0xf8;
+    const configs = [_]Config{
+        .{ .base = 1, .offset = 2, .expect = 3 },
+        .{ .base = 0, .offset = -1, .expect = 0xffff },
+        .{ .base = 0xfffe, .offset = -1, .expect = 0xfffd },
+        .{ .base = 0xfffe, .offset = 3, .expect = 1 },
+        // test flag setting
+        .{ .base = 0xff, .offset = 1, .expect = 0x100, .expect_c = true },
+        .{ .base = 0xf, .offset = 1, .expect = 0x10, .expect_h = true },
+        .{ .base = 0xf1, .offset = 0xf, .expect = 0x100, .expect_c = true },
+        .{ .base = 0x0, .offset = 16, .expect = 0x10, .expect_h = true },
+    };
+
+    for (configs) |c| {
+        var bus = Bus{};
+        var cpu = Cpu{ .bus = &bus, .rf = RegFile{} };
+
+        var i = decoder.decode_instruction(opcode);
+        cpu.rf.HL = 0;
+        cpu.rf.SP = c.base;
+        i.operands[2].value = @bitCast(@as(i16, c.offset));
+
+        try testing.expectEqual(0, cpu.rf.HL);
+
+        try testing.expectEqual(false, cpu.rf.flag_get(RegFile.F.C));
+        try testing.expectEqual(false, cpu.rf.flag_get(RegFile.F.H));
+
+        cpu.op_ld(i);
+        try testing.expectEqual(c.expect, cpu.rf.HL);
+
+        try testing.expectEqual(c.expect_c, cpu.rf.flag_get(RegFile.F.C));
+        try testing.expectEqual(c.expect_h, cpu.rf.flag_get(RegFile.F.H));
+    }
+}
+
 // ========================== Other tests
 
 test "Register Flags" {
-    var r = RegFile{ .AF = 0, .BC = 0, .DE = 0, .HL = 0, .SP = 0, .PC = 1 };
+    var r = RegFile{};
 
     try testing.expectEqual(false, r.flag_get(RegFile.F.Z));
 
