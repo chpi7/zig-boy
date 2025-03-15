@@ -13,4 +13,12 @@ pub fn main() !void {
 
     var cartridge = try Cartridge.load("./external/gb-test-roms/cpu_instrs/cpu_instrs.gb", allocator);
     defer cartridge.deinit();
+
+    var bus = Bus{ .cartridge = &cartridge };
+    var cpu = Cpu{ .bus = &bus };
+
+    cpu.rf.PC = 0x0100;
+    for (0..30) |_| {
+        cpu.execute_instruction();
+    }
 }
