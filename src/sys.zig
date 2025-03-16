@@ -161,7 +161,7 @@ pub const Bus = struct {
 
     fn read_cartridge(self: *Bus, address: u16) u8 {
         if (self.cartridge) |c| {
-            return c.data.items[address];
+            return c.read(address);
         } else {
             return self.fake_memory[address % 2];
         }
@@ -169,7 +169,7 @@ pub const Bus = struct {
 
     fn write_cartridge(self: *Bus, address: u16, value: u8) void {
         if (self.cartridge) |c| {
-            c.data.items[address] = value;
+            c.write(address, value);
         } else {
             self.fake_memory[address % 2] = value;
         }
