@@ -4,9 +4,10 @@ import pathlib
 from dataclasses import dataclass
 
 OUTPUT_HEADER = """pub const Register = enum { A, F, B, C, D, E, H, L, AF, BC, DE, HL, SP, };
-pub const OperandType = enum { unused, reg8, reg16, imm8, imm16, bit3, vec, };
-pub const Operand = struct { t: OperandType, register: Register = Register.A, value: u16 = 0, relative: bool = false, };
-pub const Instruction = struct { opcode: u8 = 0, op: OpType, operands: [3]Operand, num_operands: u8 , bytes: u8};
+pub const ConditionCode = enum (u2) { nc = 0, z = 1, nz = 2, c = 3 };
+pub const OperandType = enum { unused, reg8, reg16, imm8, imm16, bit3, vec, cc, };
+pub const Operand = struct { t: OperandType, register: Register = Register.A, value: u16 = 0, relative: bool = false, cc: ConditionCode = ConditionCode.nc, };
+pub const Instruction = struct { opcode: u8 = 0, op: OpType, operands: [3]Operand, num_operands: u2 , bytes: u2, };
 """
 
 @dataclass
@@ -30,21 +31,23 @@ class Operand:
         return self.name in (str(x) for x in range(8))
 
     def is_r8(self):
+        # !! C can both be a condition code and a register !!
         return self.name in ("A", "B", "C", "D", "E", "H", "L")
 
     def is_r16(self):
         return self.name in ("AF", "BC", "DE", "HL", "SP")
 
     def is_condition_code(self):
-        return self.name in ("NC", "Z", "NZ")
+        # !! C can both be a condition code and a register !!
+        return self.name in ("NC", "Z", "NZ", "C")
 
-    def to_zig(self):
-        assert(not self.is_condition_code())
+    def to_zig(self, treat_c_as_cc = False):
 
         value = None
         op_type = "blubb"
         rn = ""
-        if self.is_r8():
+        cc = ""
+        if self.is_r8() and (self.name != "C" or not treat_c_as_cc):
             op_type = "reg8"
             rn = f".register = Register.{self.name}"
         elif self.is_r16():
@@ -52,9 +55,13 @@ class Operand:
             rn = f".register = Register.{self.name}"
         elif self.name.startswith("$"):
             op_type = "vec"
+            value = f"{hex(int(self.name[1:], 16))}"
         elif self.is_u3():
             op_type = "bit3"
             value = int(self.name)
+        elif self.is_condition_code():
+            op_type = "cc"
+            cc = f".cc = ConditionCode.{self.name.lower()}"
         elif "8" in self.name:
             op_type = "imm8"
         elif "16" in self.name:
@@ -77,6 +84,9 @@ class Operand:
         if rn:
             args.append(rn)
 
+        if cc:
+            args.append(cc)
+
         return f"Operand{{ {', '.join(args)} }}"
 
 @dataclass
@@ -96,7 +106,8 @@ class Instruction:
 
     def to_zig(self):
         filler_operand = Operand(name="unused", immediate=True).to_zig()
-        operands = [o.to_zig() for o in self.operands if not o.is_condition_code()]
+        treat_c_as_cc_ops = [0x38];
+        operands = [o.to_zig(treat_c_as_cc=self.value in treat_c_as_cc_ops) for o in self.operands]
 
         num_operands = len(operands)
 
