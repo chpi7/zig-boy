@@ -106,6 +106,8 @@ pub const Bus = struct {
     fake_memory: [2]u8 = .{ 0, 0 },
     io: Io = .{},
     ir_ie: Ieif = .{},
+    wram_0: [4096]u8 = [_]u8{0} ** 4096,
+    wram_1: [4096]u8 = [_]u8{0} ** 4096, // Non CBG only has one bank here
 
     pub fn read(self: *Bus, address: u16) u8 {
         const Region = MemoryMap.Region;
@@ -114,9 +116,9 @@ pub const Bus = struct {
             Region.rom_bank_0 => self.read_cartridge(address),
             Region.rom_bank_n => self.read_cartridge(address),
             Region.vram => unmapped_result,
-            Region.eram => unmapped_result,
-            Region.wram_0 => unmapped_result,
-            Region.wram_n => unmapped_result,
+            Region.eram => self.read_cartridge(address),
+            Region.wram_0 => self.wram_0[@as(u12, @truncate(address - 0xc000))],
+            Region.wram_n => self.wram_1[@as(u12, @truncate(address - 0xd000))],
             Region.echo => unmapped_result, // use prohibited
             Region.oam => unmapped_result,
             Region.unused => unmapped_result, // not used
@@ -138,9 +140,13 @@ pub const Bus = struct {
             Region.rom_bank_0 => self.write_cartridge(address, value),
             Region.rom_bank_n => self.write_cartridge(address, value),
             Region.vram => {},
-            Region.eram => {},
-            Region.wram_0 => {},
-            Region.wram_n => {},
+            Region.eram => self.write_cartridge(address, value),
+            Region.wram_0 => {
+                self.wram_0[@as(u12, @truncate(address - 0xc000))] = value;
+            },
+            Region.wram_n => {
+                self.wram_1[@as(u12, @truncate(address - 0xd000))] = value;
+            },
             Region.echo => {}, // use prohibited
             Region.oam => {},
             Region.unused => {}, // not used
