@@ -108,6 +108,7 @@ pub const Bus = struct {
     ir_ie: Ieif = .{},
     wram_0: [4096]u8 = [_]u8{0} ** 4096,
     wram_1: [4096]u8 = [_]u8{0} ** 4096, // Non CBG only has one bank here
+    hram: [0x80]u8 = [_]u8{0} ** 0x80, // technically only 0x79, from ff80-fffe. Mapper handles that though.
 
     pub fn read(self: *Bus, address: u16) u8 {
         const Region = MemoryMap.Region;
@@ -123,7 +124,7 @@ pub const Bus = struct {
             Region.oam => unmapped_result,
             Region.unused => unmapped_result, // not used
             Region.io => self.io.read(address),
-            Region.hram => unmapped_result,
+            Region.hram => self.hram[@as(u7, @truncate(address - 0xff80))],
             Region.ie => @bitCast(self.ir_ie),
         };
 
@@ -151,7 +152,9 @@ pub const Bus = struct {
             Region.oam => {},
             Region.unused => {}, // not used
             Region.io => self.io.write(address, value),
-            Region.hram => {},
+            Region.hram => {
+                self.hram[@as(u7, @truncate(address - 0xff80))] = value;
+            },
             Region.ie => {
                 self.ir_ie = @bitCast(value);
                 std.log.debug("[bus] set IE = {}", .{self.ir_ie});
@@ -192,4 +195,43 @@ test "IE Type" {
     ie = @bitCast(@as(u8, 0b0001_0010));
     try testing.expectEqual(1, ie.lcd);
     try testing.expectEqual(1, ie.joypad);
+}
+
+test "R/W wram 0" {
+    var bus = Bus{};
+    const base = 0xc000;
+    const size = 4096;
+
+    for (0..size) |i| {
+        bus.write(@truncate(base + i), @truncate(i));
+    }
+    for (0..size) |i| {
+        try testing.expectEqual(i % 256, bus.read(@truncate(base + i)));
+    }
+}
+
+test "R/W wram n" {
+    var bus = Bus{};
+    const base = 0xd000;
+    const size = 4096;
+
+    for (0..size) |i| {
+        bus.write(@truncate(base + i), @truncate(i));
+    }
+    for (0..size) |i| {
+        try testing.expectEqual(i % 256, bus.read(@truncate(base + i)));
+    }
+}
+
+test "R/W hram" {
+    var bus = Bus{};
+    const base = 0xff80;
+    const size = 0xfffe - 0xff80 + 1;
+
+    for (0..size) |i| {
+        bus.write(@truncate(base + i), @truncate(i));
+    }
+    for (0..size) |i| {
+        try testing.expectEqual(i % 256, bus.read(@truncate(base + i)));
+    }
 }
