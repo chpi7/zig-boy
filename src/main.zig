@@ -18,7 +18,7 @@ pub fn main() !void {
     var cpu = Cpu{ .bus = &bus };
 
     cpu.rf.PC = 0x0100;
-    for (0..30) |_| {
+    for (0..100) |_| {
         cpu.execute_instruction();
     }
 }

@@ -182,16 +182,16 @@ pub const Cpu = struct {
         const dp = if (is_cb) decoder.opcode_to_dp_cb(i.opcode) else decoder.opcode_to_dp(i.opcode);
         const Dt = decoder.DispatchType;
         switch (dp) {
-            Dt.adc_u8_u8 => unreachable,
-            Dt.add_u16_u16 => unreachable,
-            Dt.add_u16_u8 => unreachable,
-            Dt.add_u8_u8 => unreachable,
-            Dt.and_u8_u8 => unreachable,
+            Dt.adc_u8_u8 => self.op_alu_op_u8_u8(i, Alu.adc8),
+            Dt.add_u16_u16 => self.op_alu_op_u16_u16(i, Alu.add16),
+            Dt.add_u16_u8 => unreachable, // TODO: This is SP + e8
+            Dt.add_u8_u8 => self.op_alu_op_u8_u8(i, Alu.add8),
+            Dt.and_u8_u8 => self.op_alu_op_u8_u8(i, Alu.and8),
             Dt.bit_u3_u8 => unreachable,
             Dt.call_cc_u16 => self.op_call(i),
             Dt.call_u16 => self.op_call(i),
-            Dt.ccf => unreachable,
-            Dt.cp_u8_u8 => unreachable,
+            Dt.ccf => self.op_ccf(),
+            Dt.cp_u8_u8 => self.op_alu_op_u8_u8_fl(i, Alu.cp),
             Dt.cpl => unreachable,
             Dt.daa => unreachable,
             Dt.dec_u16 => unreachable,
@@ -200,8 +200,8 @@ pub const Cpu = struct {
             Dt.ei => self.ime = 1,
             Dt.halt => unreachable,
             Dt.illegal => unreachable,
-            Dt.inc_u16 => unreachable,
-            Dt.inc_u8 => unreachable,
+            Dt.inc_u16 => self.op_alu_op_u16(i, Alu.inc16),
+            Dt.inc_u8 => self.op_alu_op_u8(i, Alu.inc8),
             Dt.jp_cc_u16 => self.op_jp(i),
             Dt.jp_u16 => self.op_jp(i),
             Dt.jr_cc_u8 => self.op_jr(i),
@@ -212,7 +212,7 @@ pub const Cpu = struct {
             Dt.ld_u8_u8 => self.op_ld(i),
             Dt.ldh_u8_u8 => self.op_ldh(i),
             Dt.nop => {},
-            Dt.or_u8_u8 => unreachable,
+            Dt.or_u8_u8 => self.op_alu_op_u8_u8(i, Alu.or8),
             Dt.pop_u16 => self.op_pop(i),
             Dt.prefix => unreachable,
             Dt.push_u16 => self.op_push(i),
@@ -239,7 +239,7 @@ pub const Cpu = struct {
             Dt.stop_u8 => unreachable,
             Dt.sub_u8_u8 => unreachable,
             Dt.swap_u8 => unreachable,
-            Dt.xor_u8_u8 => unreachable,
+            Dt.xor_u8_u8 => self.op_alu_op_u8_u8(i, Alu.xor8),
         }
 
         const o = &i.operands[0];
@@ -489,6 +489,11 @@ pub const Cpu = struct {
         }
     }
 
+    fn op_ccf(self: *Cpu) void {
+        const flags_now = self.rf.get_flags();
+        self.rf.set_flags(F.build(~F.c(flags_now), 0, 0, F.z(flags_now)));
+    }
+
     fn fetch_op_u8(self: *Cpu, o: Operand) u8 {
         // source can be one of reg8, imm8, [reg16], [imm16]
         std.debug.assert(o.t == OperandType.reg8 or
@@ -501,6 +506,17 @@ pub const Cpu = struct {
             OperandType.imm8 => @truncate(o.value),
             OperandType.reg16 => self.bus.read(self.rf.get(o.register, u16)),
             OperandType.imm16 => self.bus.read(o.value),
+            else => unreachable,
+        };
+    }
+
+    fn fetch_op_u16(self: *Cpu, o: Operand) u16 {
+        // source can only be one of reg16, imm16
+        std.debug.assert(o.t == OperandType.reg16 or o.t == OperandType.imm16);
+
+        return switch (o.t) {
+            OperandType.reg16 => self.rf.get(o.register, u16),
+            OperandType.imm16 => o.value,
             else => unreachable,
         };
     }
@@ -519,32 +535,68 @@ pub const Cpu = struct {
         }
     }
 
-    fn op_alu_op_u8(self: *Cpu, i: Instruction) void {
+    fn store_op_u16(self: *Cpu, o: Operand, v: u16) void {
+        // dst can only be reg16
+        std.debug.assert(o.t == OperandType.reg16);
+
+        switch (o.t) {
+            OperandType.reg16 => self.rf.set(u16, o.register, v),
+            else => unreachable,
+        }
+    }
+
+    fn op_alu_op_u8(self: *Cpu, i: Instruction, op: Alu.op8_t) void {
         std.debug.assert(i.num_operands == 1);
 
         const x = self.fetch_op_u8(i.operands[0]);
 
-        const res, const f = switch (i.op) {
-            OpType.INC => Alu.inc8(x, self.rf.get_flags()),
-            else => unreachable,
-        };
+        const res, const f = op(x, self.rf.get_flags());
 
         self.rf.set_flags(f);
         self.store_op_u8(i.operands[0], res);
     }
 
-    fn op_alu_op_u8_u8(self: *Cpu, i: Instruction) void {
+    fn op_alu_op_u16(self: *Cpu, i: Instruction, op: Alu.op16_t) void {
+        std.debug.assert(i.num_operands == 1);
+
+        const x = self.fetch_op_u16(i.operands[0]);
+
+        const res, const f = op(x, self.rf.get_flags());
+
+        self.rf.set_flags(f);
+        self.store_op_u16(i.operands[0], res);
+    }
+
+    fn op_alu_op_u8_u8(self: *Cpu, i: Instruction, op: Alu.op8_8_t) void {
         std.debug.assert(i.num_operands == 2);
         const a = self.fetch_op_u8(i.operands[0]);
         const b = self.fetch_op_u8(i.operands[1]);
 
-        const res, const f = switch (i.op) {
-            OpType.ADD => Alu.add(a, b, self.rf.get_flags()),
-            else => unreachable,
-        };
+        const res, const f = op(a, b, self.rf.get_flags());
 
         self.rf.set_flags(f);
         self.store_op_u8(i.operands[0], res);
+    }
+
+    fn op_alu_op_u8_u8_fl(self: *Cpu, i: Instruction, op: Alu.op8_8_fl_t) void {
+        std.debug.assert(i.num_operands == 2);
+        const a = self.fetch_op_u8(i.operands[0]);
+        const b = self.fetch_op_u8(i.operands[1]);
+
+        const f = op(a, b, self.rf.get_flags());
+
+        self.rf.set_flags(f);
+    }
+
+    fn op_alu_op_u16_u16(self: *Cpu, i: Instruction, op: Alu.op16_16_t) void {
+        std.debug.assert(i.num_operands == 2);
+        const a = self.fetch_op_u16(i.operands[0]);
+        const b = self.fetch_op_u16(i.operands[1]);
+
+        const res, const f = op(a, b, self.rf.get_flags());
+
+        self.rf.set_flags(f);
+        self.store_op_u16(i.operands[0], res);
     }
 };
 

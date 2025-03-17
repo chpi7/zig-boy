@@ -58,19 +58,38 @@ inline fn btoi(b: bool) u1 {
 }
 
 pub const Alu = struct {
+    pub const op8_8_t = *const fn (a: u8, b: u8, f: u4) struct { u8, u4 };
+    pub const op8_8_fl_t = *const fn (a: u8, b: u8, f: u4) u4;
+    pub const op8_t = *const fn (a: u8, f: u4) struct { u8, u4 };
+    pub const op16_16_t = *const fn (a: u16, b: u16, f: u4) struct { u16, u4 };
+    pub const op16_t = *const fn (a: u16, f: u4) struct { u16, u4 };
+
     pub const F = Flags;
 
-    pub fn adc(a_in: u8, b_in: u8, f: u4) struct { u8, u4 } {
-        const a: u16 = a_in;
-        const b: u16 = b_in;
-        const set_h = (((a & 0xf) +% (b & 0xf) +% F.c(f)) & 0x10) == 0x10;
-        const set_c = (((a & 0xff) +% (b & 0xff) +% F.c(f)) & 0x100) == 0x100;
-        const res = a_in +% b_in +% F.c(f);
+    pub fn adc8(a: u8, b: u8, f: u4) struct { u8, u4 } {
+        // adc a+b == add a+b+c
+        const c = F.c(f);
+        const tmp_res, const flags1 = Alu.add8(b, c, f);
+        const res, const flags2 = Alu.add8(a, tmp_res, f);
+        const flags = F.build(
+            F.c(flags1) | F.c(flags2),
+            F.h(flags1) | F.h(flags2),
+            0,
+            btoi(res == 0),
+        );
 
-        return .{ res, F.build(btoi(set_c), btoi(set_h), 0, btoi(res == 0)) };
+        return .{ res, flags };
+
+        // const a: u16 = a_in;
+        // const b: u16 = b_in;
+        // const set_h = (((a & 0xf) +% (b & 0xf) +% F.c(f)) & 0x10) == 0x10;
+        // const set_c = (((a & 0xff) +% (b & 0xff) +% F.c(f)) & 0x100) == 0x100;
+        // const res = a_in +% b_in +% F.c(f);
+
+        // return .{ res, F.build(btoi(set_c), btoi(set_h), 0, btoi(res == 0)) };
     }
 
-    pub fn add(a: u8, b: u8, _: u4) struct { u8, u4 } {
+    pub fn add8(a: u8, b: u8, _: u4) struct { u8, u4 } {
         const set_h = (((a & 0xf) +% (b & 0xf)) & 0x10) == 0x10;
         const res, const set_c = @addWithOverflow(a, b);
 
@@ -81,21 +100,16 @@ pub const Alu = struct {
         const set_h = (((a & 0xfff) +% (b & 0xfff)) & 0x1000) == 0x1000;
         const res, const set_c = @addWithOverflow(a, b);
 
-        return .{ res, F.build(btoi(set_c), btoi(set_h), 0, F.z(f)) };
+        return .{ res, F.build(set_c, btoi(set_h), 0, F.z(f)) };
     }
 
-    pub fn add16i8(a: u16, b_in: i8) struct { u16, u4 } {
+    pub fn add16i8(a: u16, b_in: i8, _: u4) struct { u16, u4 } {
         const b: u16 = @bitCast(@as(i16, b_in));
         const set_h = (((a & 0xf) +% (b & 0xf)) & 0x10) == 0x10;
         const set_c = (((a & 0xff) +% (b & 0xff)) & 0x100) == 0x100;
         const res = a +% b;
 
         return .{ res, F.build(btoi(set_c), btoi(set_h), 0, 0) };
-    }
-
-    pub fn and_bit(a: u8, b: u8) struct { u8, u4 } {
-        const res = a & b;
-        return .{ res, F.build(0, 1, 0, btoi(res == 0)) };
     }
 
     pub inline fn bit(a: u3, b: u8, f: u4) u4 {
@@ -107,7 +121,7 @@ pub const Alu = struct {
         return (f ^ F.mask(F.C)) & ~(F.mask(F.N) | F.mask(F.H));
     }
 
-    pub fn cp(a: u8, b: u8) u4 {
+    pub fn cp(a: u8, b: u8, _: u4) u4 {
         const set_h = @as(u4, @truncate(b)) > @as(u4, @truncate(a)); // TODO: is this correct?
         return F.build(btoi(b > a), btoi(set_h), 1, btoi(a == b));
     }
@@ -138,7 +152,7 @@ pub const Alu = struct {
     }
 
     pub fn inc8(a: u8, f: u4) struct { u8, u4 } {
-        const res, const new_f = Alu.add(a, 1, f);
+        const res, const new_f = Alu.add8(a, 1, f);
         // inc should leave c alone, so restore it.
         return .{ res, (new_f & ~F.mask(F.C)) | F.c(f) };
     }
@@ -146,6 +160,21 @@ pub const Alu = struct {
     pub fn inc16(a: u16, f: u4) struct { u16, u4 } {
         const res, _ = Alu.add16(a, 1, f);
         return .{ res, f };
+    }
+
+    pub fn or8(a: u8, b: u8, _: u4) struct { u8, u4 } {
+        const res = a | b;
+        return .{ res, F.build(0, 0, 0, btoi(res == 0)) };
+    }
+
+    pub fn and8(a: u8, b: u8, _: u4) struct { u8, u4 } {
+        const res = a & b;
+        return .{ res, F.build(0, 1, 0, btoi(res == 0)) };
+    }
+
+    pub fn xor8(a: u8, b: u8, _: u4) struct { u8, u4 } {
+        const res = a ^ b;
+        return .{ res, F.build(0, 0, 0, btoi(res == 0)) };
     }
 };
 
