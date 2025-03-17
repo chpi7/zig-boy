@@ -1,5 +1,8 @@
 const std = @import("std");
 const cartridge = @import("cartridge.zig");
+const lcd = @import("lcd.zig");
+
+const Lcd = lcd.Lcd;
 
 /// Interrupt enable / flag register layout
 const Ieif = packed struct {
@@ -26,10 +29,22 @@ const Io = struct {
 
     serial: SerialPort = .{},
     ir_if: Ieif = .{}, // IF in docs (but is interrupt request)
+    lcd: Lcd = .{},
 
     pub fn write(self: *Io, address: u16, value: u8) void {
         const r = ioreg(address);
         std.log.debug("[io]  {} := {}", .{ r, value });
+
+        // start a new approach of less annoying implementation here:
+        // just write through to everything and let the receiver discard
+        // the write if the address isn't correct. They check the address
+        // anyways to know where they need to write in 99% of cases.
+        // So checking here is a bit pointless.
+        // Really, it is pointless to route the reads/writes at all if it isn't
+        // targeting a register directly already.
+
+        self.lcd.write(address, value);
+
         switch (r) {
             R.serial_sb => self.serial.set_sb(value),
             R.serial_sc => self.serial.set_sc(value),
@@ -41,12 +56,17 @@ const Io = struct {
     pub fn read(self: *Io, address: u16) u8 {
         const r = ioreg(address);
         // std.log.debug("[io] u8 {} <- {}", .{ r, value });
-        const result: u8 = switch (r) {
+        var result: u8 = switch (r) {
             R.serial_sb => self.serial.sb,
             R.serial_sc => self.serial.sc,
             R.ir_if => @bitCast(self.ir_if),
-            R.not_impl, R.audio => 0xff,
+            R.not_impl, R.audio => 0x00,
         };
+
+        // This is basically what a bus would do. Only one connected device
+        // should answer anyways.
+        result |= self.lcd.read(address);
+
         std.log.debug("[io]  read {} (={})", .{ r, result });
         return result;
     }

@@ -104,6 +104,8 @@ const RegFile = struct {
         @field(self, x) = (@field(self, x) & 0xFF00) | v;
     }
 
+    // --------------- Flags ----------------
+
     inline fn set_flag(self: *RegFile, comptime flag: F, value: u1) void {
         self.AF = (self.AF & 0xfff0) | F.set(@truncate(self.AF), flag, value);
     }
@@ -117,7 +119,7 @@ const RegFile = struct {
     }
 
     inline fn get_flags(self: *RegFile) u4 {
-        return @truncate(self.AF >> 12);
+        return @truncate(self.AF);
     }
 
     fn test_cc(self: *RegFile, cc: decoder.ConditionCode) bool {
@@ -130,8 +132,12 @@ const RegFile = struct {
     }
 
     fn dump_debug(self: *RegFile) void {
+        const f = self.get_flags();
         std.log.debug("Registers:", .{});
-        std.log.debug("\tAF {x:04}\tHL {x:04}", .{ self.AF, self.HL });
+        std.log.debug(
+            "\tAF {x:04}\tHL {x:04}\t (F: z:{} n:{} h:{} c:{})",
+            .{ self.AF, self.HL, F.z(f), F.n(f), F.h(f), F.c(f) },
+        );
         std.log.debug("\tBC {x:04}\tSP {x:04}", .{ self.BC, self.SP });
         std.log.debug("\tDE {x:04}\tPC {x:04}", .{ self.DE, self.PC });
     }
@@ -909,7 +915,16 @@ test "LD HL SP+e8" {
 
 // ========================== Other tests
 
-test "Get/Set Flags Sanity CPU" {
+test "AF register get/set flags" {
+    var rf = RegFile{};
+    rf.AF = 0xfff0;
+    try testing.expectEqual(0, rf.get_flags());
+
+    rf.set_flags(0b1010);
+    try testing.expectEqual(0xfffa, rf.AF);
+}
+
+test "AF register get/set individual" {
     var r = RegFile{};
     r.AF = 0;
     try testing.expectEqual(0, r.get_flag(F.C));
@@ -917,4 +932,17 @@ test "Get/Set Flags Sanity CPU" {
     try testing.expectEqual(1, r.get_flag(F.C));
     r.set_flag(F.C, 0);
     try testing.expectEqual(0, r.get_flag(F.C));
+
+    r.AF = 0b0000_0001;
+    try testing.expectEqual(1, r.get_flag(F.Z));
+
+    r.AF = 0b0000_0100;
+    try testing.expectEqual(1, r.get_flag(F.H));
+
+    r.AF = 0;
+    r.set_flag(F.Z, 1);
+    try testing.expectEqual(0b0000_0001, r.AF);
+
+    r.set_flag(F.C, 1);
+    try testing.expectEqual(0b0000_1001, r.AF);
 }

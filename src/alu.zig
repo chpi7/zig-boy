@@ -10,10 +10,10 @@ const Flags = enum {
 
     pub fn offset(comptime flag: F) u2 {
         return switch (flag) {
-            F.Z => 3,
-            F.N => 2,
-            F.H => 1,
-            F.C => 0,
+            F.Z => 0,
+            F.N => 1,
+            F.H => 2,
+            F.C => 3,
         };
     }
 
@@ -184,7 +184,7 @@ const testing = std.testing;
 
 test "adc" {
     const flags = 0;
-    const res, const new_flags = Alu.adc(1, 1, flags);
+    const res, const new_flags = Alu.adc8(1, 1, flags);
     try testing.expectEqual(2, res);
     try testing.expectEqual(0, new_flags);
 }
