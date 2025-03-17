@@ -70,19 +70,18 @@ pub const Alu = struct {
         return .{ res, F.build(btoi(set_c), btoi(set_h), 0, btoi(res == 0)) };
     }
 
-    pub fn add(a: u8, b: u8) struct { u8, u4 } {
+    pub fn add(a: u8, b: u8, _: u4) struct { u8, u4 } {
         const set_h = (((a & 0xf) +% (b & 0xf)) & 0x10) == 0x10;
-        const set_c = (((a & 0xff) +% (b & 0xff)) & 0x100) == 0x100;
-        const res = a +% b;
+        const res, const set_c = @addWithOverflow(a, b);
 
-        return .{ res, F.build(btoi(set_c), btoi(set_h), 0, btoi(res == 0)) };
+        return .{ res, F.build(set_c, btoi(set_h), 0, btoi(res == 0)) };
     }
 
-    pub fn add16(a: u16, b: u16) struct { u16, u4 } {
+    pub fn add16(a: u16, b: u16, f: u4) struct { u16, u4 } {
         const set_h = (((a & 0xfff) +% (b & 0xfff)) & 0x1000) == 0x1000;
         const res, const set_c = @addWithOverflow(a, b);
 
-        return .{ res, F.build(btoi(set_c), btoi(set_h), 0, btoi(res == 0)) };
+        return .{ res, F.build(btoi(set_c), btoi(set_h), 0, F.z(f)) };
     }
 
     pub fn add16i8(a: u16, b_in: i8) struct { u16, u4 } {
@@ -99,18 +98,22 @@ pub const Alu = struct {
         return .{ res, F.build(0, 1, 0, btoi(res == 0)) };
     }
 
-    pub inline fn bit(a: u3, b: u8) u4 {
+    pub inline fn bit(a: u3, b: u8, f: u4) u4 {
         const mask = 1 << a;
-        return F.build(0, 1, 0, btoi((b & mask) != 0));
+        return F.build(F.c(f), 1, 0, btoi((b & mask) != 0));
     }
 
     pub inline fn ccf(f: u4) u4 {
-        return f ^ F.mask(F.C);
+        return (f ^ F.mask(F.C)) & ~(F.mask(F.N) | F.mask(F.H));
     }
 
     pub fn cp(a: u8, b: u8) u4 {
         const set_h = @as(u4, @truncate(b)) > @as(u4, @truncate(a)); // TODO: is this correct?
         return F.build(btoi(b > a), btoi(set_h), 1, btoi(a == b));
+    }
+
+    pub fn cpl(a: u8, f: u4) struct { u8, u4 } {
+        return .{ ~a, F.build(F.c(f), 1, 1, F.z(f)) };
     }
 
     pub fn dda(a: u8, f: u4) struct { u8, u4 } {
@@ -131,7 +134,18 @@ pub const Alu = struct {
             res = a +% adjust;
         }
 
-        return .{ res, F.build(carry, 0, 0, btoi(res == 0)) };
+        return .{ res, F.build(carry, 0, F.n(f), btoi(res == 0)) };
+    }
+
+    pub fn inc8(a: u8, f: u4) struct { u8, u4 } {
+        const res, const new_f = Alu.add(a, 1, f);
+        // inc should leave c alone, so restore it.
+        return .{ res, (new_f & ~F.mask(F.C)) | F.c(f) };
+    }
+
+    pub fn inc16(a: u16, f: u4) struct { u16, u4 } {
+        const res, _ = Alu.add16(a, 1, f);
+        return .{ res, f };
     }
 };
 

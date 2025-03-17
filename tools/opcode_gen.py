@@ -41,6 +41,54 @@ class Operand:
         # !! C can both be a condition code and a register !!
         return self.name in ("NC", "Z", "NZ", "C")
 
+    def dispatch_type_old(self, treat_c_as_cc = False):
+        if self.is_r8() and (self.name != "C" or not treat_c_as_cc):
+            op_type = "reg8"
+        elif self.is_r16():
+            op_type = "reg16"
+        elif self.name.startswith("$"):
+            op_type = "vec"
+        elif self.is_u3():
+            op_type = "bit3"
+        elif self.is_condition_code():
+            op_type = "cc"
+        elif "8" in self.name:
+            op_type = "imm8"
+        elif "16" in self.name:
+            op_type = "imm16"
+        else:
+            op_type = "invalid"
+
+        if not self.immediate:
+            op_type += "r"
+
+        return op_type
+
+    def dispatch_type(self, treat_c_as_cc = False):
+
+        if not self.immediate:
+            op_type = "u8" # relative (aka memory load) always load/store 1 byte
+        elif self.is_r8() and (self.name != "C" or not treat_c_as_cc):
+            op_type = "u8"
+        elif self.is_r16():
+            op_type = "u16"
+        elif self.name.startswith("$"):
+            op_type = "vec"
+        elif self.is_u3():
+            op_type = "u3"
+        elif self.is_condition_code():
+            op_type = "cc"
+        elif "8" in self.name:
+            op_type = "u8"
+        elif "16" in self.name:
+            op_type = "u16"
+        else:
+            op_type = "invalid"
+
+
+
+        return op_type
+
     def to_zig(self, treat_c_as_cc = False):
 
         value = None
@@ -104,9 +152,14 @@ class Instruction:
     def pretty_str(self):
         return f"{self.mnemonic} {', '.join([o.pretty_str() for o in self.operands])}".strip()
 
+    def dispatch_type(self):
+        treat_c_as_cc_ops = [0x38, 0xdc, 0xda];
+        ops = '_'.join([o.dispatch_type(treat_c_as_cc=self.value in treat_c_as_cc_ops) for o in self.operands])
+        return f"{self.mnemonic.lower()}{'_' if ops else ''}{ops}"
+
     def to_zig(self):
         filler_operand = Operand(name="unused", immediate=True).to_zig()
-        treat_c_as_cc_ops = [0x38];
+        treat_c_as_cc_ops = [0x38, 0xdc, 0xda];
         operands = [o.to_zig(treat_c_as_cc=self.value in treat_c_as_cc_ops) for o in self.operands]
 
         num_operands = len(operands)
@@ -153,6 +206,24 @@ def generate_opcode_to_str(instructions: list[Instruction], fname: str):
 
     return '\n'.join(result)
 
+def generate_opcode_to_dispatch(instructions: list[Instruction], fname: str):
+    result = []
+    result += [f"pub fn {fname}(opcode: u8) DispatchType {{"]
+    result += ["    const Dt = DispatchType;"]
+    result += ["    switch(opcode) {"]
+    for i in instructions:
+        result += [f"        0x{i.value:02x} => return Dt.{i.dispatch_type()},"]
+    result += ["    }"]
+    result += ["}"]
+
+    return '\n'.join(result)
+
+def generate_dispatch_types(instr: list[Instruction], instr_cb: list[Instruction]):
+    ts = [i.dispatch_type() for i in instr]
+    ts += [i.dispatch_type() for i in instr_cb]
+    as_str = ', '.join(sorted(set(ts)))
+    return f"pub const DispatchType = enum {{ {as_str} }};"
+
 def parse_instructions(definitions: dict):
     instructions: list[Instruction] = []
     for value, op in definitions.items():
@@ -177,14 +248,18 @@ def generate(definitions: dict, args: argparse.Namespace):
     prefixed_instructions: list[Instruction] = parse_instructions(definitions["cbprefixed"])
 
     op_types = f"pub {generate_opcodes(instructions, prefixed_instructions)}"
+    dp_types = generate_dispatch_types(instructions, prefixed_instructions)
 
     with open(args.output, "wt") as f:
         f.write(op_types + '\n')
+        f.write(dp_types + '\n')
         f.write(OUTPUT_HEADER)
         f.write(generate_decoder(instructions, "decode_instruction") + '\n')
         f.write(generate_decoder(prefixed_instructions, "decode_instruction_cb") + '\n')
-        f.write(generate_opcode_to_str(instructions, "opcode_to_str"))
-        f.write(generate_opcode_to_str(prefixed_instructions, "opcode_to_str_cb"))
+        f.write(generate_opcode_to_str(instructions, "opcode_to_str") + '\n')
+        f.write(generate_opcode_to_str(prefixed_instructions, "opcode_to_str_cb") + '\n')
+        f.write(generate_opcode_to_dispatch(instructions, "opcode_to_dp") + '\n')
+        f.write(generate_opcode_to_dispatch(prefixed_instructions, "opcode_to_dp_cb") + '\n')
 
 
 def main():

@@ -96,20 +96,37 @@ const RegFile = struct {
         return @truncate(v);
     }
 
-    fn set_hi(self: *RegFile, v: u16, comptime x: []const u8) void {
+    inline fn set_hi(self: *RegFile, v: u16, comptime x: []const u8) void {
         @field(self, x) = (@field(self, x) & 0x00FF) | (v << 8);
     }
 
-    fn set_lo(self: *RegFile, v: u16, comptime x: []const u8) void {
+    inline fn set_lo(self: *RegFile, v: u16, comptime x: []const u8) void {
         @field(self, x) = (@field(self, x) & 0xFF00) | v;
     }
 
-    fn set_flag(self: *RegFile, comptime flag: F, value: u1) void {
+    inline fn set_flag(self: *RegFile, comptime flag: F, value: u1) void {
         self.AF = (self.AF & 0xfff0) | F.set(@truncate(self.AF), flag, value);
     }
 
-    fn get_flag(self: *RegFile, comptime flag: F) u1 {
+    inline fn set_flags(self: *RegFile, value: u4) void {
+        self.AF = (self.AF & 0xfff0) | value;
+    }
+
+    inline fn get_flag(self: *RegFile, comptime flag: F) u1 {
         return F.get(@truncate(self.AF), flag);
+    }
+
+    inline fn get_flags(self: *RegFile) u4 {
+        return @truncate(self.AF >> 12);
+    }
+
+    fn test_cc(self: *RegFile, cc: decoder.ConditionCode) bool {
+        return switch (cc) {
+            decoder.ConditionCode.c => self.get_flag(F.C) == 1,
+            decoder.ConditionCode.nc => self.get_flag(F.C) == 0,
+            decoder.ConditionCode.z => self.get_flag(F.Z) == 1,
+            decoder.ConditionCode.nz => self.get_flag(F.Z) == 0,
+        };
     }
 
     fn dump_debug(self: *RegFile) void {
@@ -125,6 +142,7 @@ pub const Cpu = struct {
     ime: u1 = 0, // global interrupt enable
     bus: *Bus,
     halted: bool = false,
+    instruction_debug_counter: u32 = 0,
 
     fn decode_next(self: *Cpu) struct { Instruction, bool } {
         const decode_result = decoder.decode_instruction(self.bus.read(self.rf.PC));
@@ -137,109 +155,230 @@ pub const Cpu = struct {
         o.value = switch (o.t) {
             OperandType.imm16 => @as(u16, instr_mem[1]) | (@as(u16, instr_mem[2]) << 8), // load as little endian
             OperandType.imm8 => instr_mem[1],
-            OperandType.vec => 0, // TODO
             else => o.value, // nothing to change
         };
     }
 
     pub fn execute_instruction(self: *Cpu) void {
-        var instr, const is_cb = self.decode_next();
+        var i, const is_cb = self.decode_next();
 
         if (is_cb) {
-            std.log.debug("[cpu] ---- @ {x:04}  {s}", .{ self.rf.PC, decoder.opcode_to_str_cb(instr.opcode) });
+            std.log.debug("[cpu] ---- {} @ {x:04}  {s}", .{ self.instruction_debug_counter, self.rf.PC, decoder.opcode_to_str_cb(i.opcode) });
         } else {
-            std.log.debug("[cpu] ---- @ {x:04}  {s}", .{ self.rf.PC, decoder.opcode_to_str(instr.opcode) });
+            std.log.debug("[cpu] ---- {} @ {x:04}  {s}", .{ self.instruction_debug_counter, self.rf.PC, decoder.opcode_to_str(i.opcode) });
         }
 
         const next_two_bytes = [_]u8{
-            instr.opcode,
-            if (instr.bytes > 1) self.bus.read(self.rf.PC + 1) else 0,
-            if (instr.bytes > 2) self.bus.read(self.rf.PC + 2) else 0,
+            i.opcode,
+            if (i.bytes > 1) self.bus.read(self.rf.PC + 1) else 0,
+            if (i.bytes > 2) self.bus.read(self.rf.PC + 2) else 0,
         };
-        decode_imm(&instr.operands[0], &next_two_bytes);
-        decode_imm(&instr.operands[1], &next_two_bytes);
-        decode_imm(&instr.operands[2], &next_two_bytes);
+        decode_imm(&i.operands[0], &next_two_bytes);
+        decode_imm(&i.operands[1], &next_two_bytes);
+        decode_imm(&i.operands[2], &next_two_bytes);
 
-        self.rf.PC += instr.bytes; // this accounts for prefix + immediates
+        self.rf.PC += i.bytes; // this accounts for prefix + immediates
 
-        switch (instr.op) {
-            OpType.ADC => unreachable,
-            OpType.ADD => unreachable,
-            OpType.AND => unreachable,
-            OpType.CALL => {
-                if (instr.num_operands == 1) {
-                    // CALL imm16
-                    self.rf.SP -%= 1;
-                    self.bus.write(self.rf.SP, @truncate(self.rf.PC >> 8));
-                    self.rf.SP -%= 1;
-                    self.bus.write(self.rf.SP, @truncate(self.rf.PC));
-                    self.rf.PC = instr.operands[0].value;
-                    self.rf.dump_debug();
-                } else {
-                    // TODO conditional call
-                    unreachable;
-                }
-            },
-            OpType.CCF => unreachable,
-            OpType.CP => unreachable,
-            OpType.CPL => unreachable,
-            OpType.DAA => unreachable,
-            OpType.DEC => unreachable,
-            OpType.DI => {
-                self.ime = 0;
-            },
-            OpType.EI => {
-                self.ime = 1;
-            },
-            OpType.HALT => unreachable,
-            OpType.ILLEGAL => unreachable,
-            OpType.INC => unreachable,
-            OpType.JP => {
-                if (instr.operands[0].t == OperandType.imm16) {
-                    self.rf.PC = instr.operands[0].value;
-                } else if (instr.operands[0].t == OperandType.reg16) {
-                    if (instr.operands[0].register != RegName.HL) unreachable;
-                    self.rf.PC = self.rf.HL;
-                } else {
-                    // TODO conditional jump
-                    unreachable;
-                }
-                std.log.debug("[cpu] pc = {x:04}", .{self.rf.PC});
-            },
-            OpType.JR => unreachable,
-            OpType.LD => {
-                self.op_ld(instr);
-                if (!instr.operands[0].relative) {
-                    self.rf.dump_debug();
-                }
-            },
-            OpType.LDH => {
-                self.op_ldh(instr);
-                if (!instr.operands[0].relative) {
-                    self.rf.dump_debug();
-                }
-            },
-            OpType.NOP => {},
-            OpType.OR => unreachable,
-            OpType.POP => unreachable,
-            OpType.PREFIX => unreachable,
-            OpType.PUSH => unreachable,
-            OpType.RET => unreachable,
-            OpType.RETI => unreachable,
-            OpType.RLA => unreachable,
-            OpType.RLCA => unreachable,
-            OpType.RRA => unreachable,
-            OpType.RRCA => unreachable,
-            OpType.RST => unreachable,
-            OpType.SBC => unreachable,
-            OpType.SCF => unreachable,
-            OpType.STOP => unreachable,
-            OpType.SUB => unreachable,
-            OpType.XOR => unreachable,
-            else => unreachable,
+        const dp = if (is_cb) decoder.opcode_to_dp_cb(i.opcode) else decoder.opcode_to_dp(i.opcode);
+        const Dt = decoder.DispatchType;
+        switch (dp) {
+            Dt.adc_u8_u8 => unreachable,
+            Dt.add_u16_u16 => unreachable,
+            Dt.add_u16_u8 => unreachable,
+            Dt.add_u8_u8 => unreachable,
+            Dt.and_u8_u8 => unreachable,
+            Dt.bit_u3_u8 => unreachable,
+            Dt.call_cc_u16 => self.op_call(i),
+            Dt.call_u16 => self.op_call(i),
+            Dt.ccf => unreachable,
+            Dt.cp_u8_u8 => unreachable,
+            Dt.cpl => unreachable,
+            Dt.daa => unreachable,
+            Dt.dec_u16 => unreachable,
+            Dt.dec_u8 => unreachable,
+            Dt.di => self.ime = 0,
+            Dt.ei => self.ime = 1,
+            Dt.halt => unreachable,
+            Dt.illegal => unreachable,
+            Dt.inc_u16 => unreachable,
+            Dt.inc_u8 => unreachable,
+            Dt.jp_cc_u16 => self.op_jp(i),
+            Dt.jp_u16 => self.op_jp(i),
+            Dt.jr_cc_u8 => self.op_jr(i),
+            Dt.jr_u8 => self.op_jr(i),
+            Dt.ld_u16_u16 => self.op_ld(i),
+            Dt.ld_u16_u16_u8 => self.op_ld(i),
+            Dt.ld_u8_u16 => self.op_ld(i),
+            Dt.ld_u8_u8 => self.op_ld(i),
+            Dt.ldh_u8_u8 => self.op_ldh(i),
+            Dt.nop => {},
+            Dt.or_u8_u8 => unreachable,
+            Dt.pop_u16 => self.op_pop(i),
+            Dt.prefix => unreachable,
+            Dt.push_u16 => self.op_push(i),
+            Dt.res_u3_u8 => unreachable,
+            Dt.ret => self.op_ret(i),
+            Dt.ret_cc => self.op_ret(i),
+            Dt.ret_u8 => self.op_ret(i),
+            Dt.reti => unreachable,
+            Dt.rl_u8 => unreachable,
+            Dt.rla => unreachable,
+            Dt.rlc_u8 => unreachable,
+            Dt.rlca => unreachable,
+            Dt.rr_u8 => unreachable,
+            Dt.rra => unreachable,
+            Dt.rrc_u8 => unreachable,
+            Dt.rrca => unreachable,
+            Dt.rst_vec => unreachable,
+            Dt.sbc_u8_u8 => unreachable,
+            Dt.scf => unreachable,
+            Dt.set_u3_u8 => unreachable,
+            Dt.sla_u8 => unreachable,
+            Dt.sra_u8 => unreachable,
+            Dt.srl_u8 => unreachable,
+            Dt.stop_u8 => unreachable,
+            Dt.sub_u8_u8 => unreachable,
+            Dt.swap_u8 => unreachable,
+            Dt.xor_u8_u8 => unreachable,
+        }
+
+        const o = &i.operands[0];
+        if ((o.t == OperandType.reg8 or o.t == OperandType.reg16) and !o.relative) {
+            // if the first (maybe dst) operand is a register, dump them
+            self.rf.dump_debug();
         }
 
         std.log.debug("[cpu] execute done", .{});
+        self.instruction_debug_counter +%= 1;
+    }
+
+    /// Prepare i8 stored in u16 immediate for arithmetic.
+    /// This is because we read all immediates into a u16:
+    /// 0x00ff would be -1 = 0xff written into a u16.
+    /// For the arithmentic to be less annyoing, sign extend the encoded i8
+    /// to i16. So 0xffff in this case.
+    fn se_i8_in_u16(x: u16) u16 {
+        const a: i8 = @bitCast(@as(u8, @truncate(x)));
+        const b: i16 = @intCast(a); // properly sign extend in i16
+        return @bitCast(b); // treat as u16 again
+    }
+
+    fn msb(x: u16) u8 {
+        return @truncate(x >> 8);
+    }
+
+    fn lsb(x: u16) u8 {
+        return @truncate(x);
+    }
+
+    fn op_push(self: *Cpu, i: Instruction) void {
+        std.debug.assert(i.operands[0].t == OperandType.reg16);
+        const reg = i.operands[0].register;
+
+        self.rf.SP -%= 1;
+        self.bus.write(self.rf.SP, msb(self.rf.get(reg, u16)));
+        self.rf.SP -%= 1;
+        self.bus.write(self.rf.SP, lsb(self.rf.get(reg, u16)));
+    }
+
+    fn op_pop(self: *Cpu, i: Instruction) void {
+        std.debug.assert(i.operands[0].t == OperandType.reg16);
+
+        const l: u16 = self.bus.read(self.rf.SP);
+        self.rf.SP +%= 1;
+        const m: u16 = self.bus.read(self.rf.SP);
+        self.rf.SP +%= 1;
+
+        self.rf.set(u16, i.operands[0].register, m << 8 | l);
+    }
+
+    fn op_call(self: *Cpu, i: Instruction) void {
+        var target: u16 = 0;
+        var is_cc = false;
+
+        if (i.num_operands == 2) {
+            std.debug.assert(i.operands[1].t == OperandType.imm16);
+            std.debug.assert(i.operands[0].t == OperandType.cc);
+            target = i.operands[1].value;
+            is_cc = true;
+        } else {
+            std.debug.assert(i.num_operands == 1);
+            std.debug.assert(i.operands[0].t == OperandType.imm16);
+            target = i.operands[0].value;
+        }
+
+        if (!is_cc or self.rf.test_cc(i.operands[0].cc)) {
+            self.rf.SP -%= 1;
+            self.bus.write(self.rf.SP, msb(self.rf.PC));
+            self.rf.SP -%= 1;
+            self.bus.write(self.rf.SP, lsb(self.rf.PC));
+            self.rf.PC = target;
+            self.rf.dump_debug();
+        }
+    }
+
+    fn op_ret(self: *Cpu, i: Instruction) void {
+        var is_cc = false;
+
+        if (i.num_operands == 1) {
+            std.debug.assert(i.operands[0].t == OperandType.cc);
+            is_cc = true;
+        }
+
+        if (!is_cc or self.rf.test_cc(i.operands[0].cc)) {
+            const l: u16 = self.bus.read(self.rf.SP);
+            self.rf.SP +%= 1;
+            const m: u16 = self.bus.read(self.rf.SP);
+            self.rf.SP +%= 1;
+
+            self.rf.PC = m << 8 | l;
+            std.log.debug("[cpu] pc = {x:04}", .{self.rf.PC});
+        }
+    }
+
+    fn op_jp(self: *Cpu, i: Instruction) void {
+        var is_cc = false;
+        var dst: *const Operand = &i.operands[0];
+
+        if (i.num_operands == 2) {
+            std.debug.assert(i.operands[0].t == OperandType.cc);
+            dst = &i.operands[1];
+            is_cc = true;
+        }
+
+        var target: u16 = 0;
+        if (dst.t == OperandType.imm16) {
+            target = dst.value;
+        } else if (dst.t == OperandType.reg16) {
+            std.debug.assert(dst.register == RegName.HL);
+            target = self.rf.HL;
+        }
+
+        if (!is_cc or self.rf.test_cc(i.operands[0].cc)) {
+            self.rf.PC = target;
+            std.log.debug("[cpu] pc = {x:04}", .{self.rf.PC});
+        }
+    }
+
+    fn op_jr(self: *Cpu, i: Instruction) void {
+        var is_cc = false;
+        var offset = i.operands[0].value;
+
+        if (i.num_operands == 2) {
+            std.debug.assert(i.operands[0].t == OperandType.cc);
+            std.debug.assert(i.operands[1].t == OperandType.imm8);
+            offset = i.operands[1].value;
+            is_cc = true;
+        } else {
+            std.debug.assert(i.num_operands == 1);
+            std.debug.assert(i.operands[0].t == OperandType.imm8);
+        }
+
+        if (!is_cc or self.rf.test_cc(i.operands[0].cc)) {
+            const offset_as_u16: u16 = se_i8_in_u16(offset);
+            self.rf.PC +%= offset_as_u16;
+            std.log.debug("[cpu] pc = {x:04}", .{self.rf.PC});
+        }
     }
 
     pub fn op_ldh(self: *Cpu, i: Instruction) void {
@@ -289,9 +428,9 @@ pub const Cpu = struct {
             self.rf.set(u16, i.operands[0].register, i.operands[1].value);
         } else if (i.opcode == 0xf8) {
             // debugging only:
-            // Expect the i8 to be properly encoded in i16 with sign extension.
-            const offset: i16 = @bitCast(i.operands[2].value);
-            if (offset < -128 or offset > 127) unreachable; // sanity check that the offset is i8
+            const offset: i16 = @bitCast(se_i8_in_u16(i.operands[2].value));
+            // not sure if this is actually true when reading from the cartridge.
+            std.debug.assert(-128 <= offset and offset <= 127);
 
             const offset_u: u16 = i.operands[2].value;
             const sp = self.rf.SP;
@@ -305,7 +444,7 @@ pub const Cpu = struct {
             self.rf.set_flag(F.H, set_h);
             self.rf.set_flag(F.C, set_c);
 
-            self.rf.HL = sp +% offset_u;
+            self.rf.HL = sp +% se_i8_in_u16(offset_u);
 
             std.log.debug("load special offset {}", .{offset});
             std.log.debug("load special sp {}", .{self.rf.SP});
@@ -348,6 +487,64 @@ pub const Cpu = struct {
             },
             else => {},
         }
+    }
+
+    fn fetch_op_u8(self: *Cpu, o: Operand) u8 {
+        // source can be one of reg8, imm8, [reg16], [imm16]
+        std.debug.assert(o.t == OperandType.reg8 or
+            o.t == OperandType.imm8 or
+            (o.t == OperandType.reg16 and o.relative) or
+            (o.t == OperandType.imm16 and o.relative));
+
+        return switch (o.t) {
+            OperandType.reg8 => self.rf.get(o.register, u8),
+            OperandType.imm8 => @truncate(o.value),
+            OperandType.reg16 => self.bus.read(self.rf.get(o.register, u16)),
+            OperandType.imm16 => self.bus.read(o.value),
+            else => unreachable,
+        };
+    }
+
+    fn store_op_u8(self: *Cpu, o: Operand, v: u8) void {
+        // dst can be one of reg8, [reg16], [imm16]
+        std.debug.assert(o.t == OperandType.reg8 or
+            (o.t == OperandType.reg16 and o.relative) or
+            (o.t == OperandType.imm16 and o.relative));
+
+        switch (o.t) {
+            OperandType.reg8 => self.rf.set(u8, o.register, v),
+            OperandType.reg16 => self.bus.write(self.rf.get(o.register, u16), v),
+            OperandType.imm16 => self.bus.write(o.value, v),
+            else => unreachable,
+        }
+    }
+
+    fn op_alu_op_u8(self: *Cpu, i: Instruction) void {
+        std.debug.assert(i.num_operands == 1);
+
+        const x = self.fetch_op_u8(i.operands[0]);
+
+        const res, const f = switch (i.op) {
+            OpType.INC => Alu.inc8(x, self.rf.get_flags()),
+            else => unreachable,
+        };
+
+        self.rf.set_flags(f);
+        self.store_op_u8(i.operands[0], res);
+    }
+
+    fn op_alu_op_u8_u8(self: *Cpu, i: Instruction) void {
+        std.debug.assert(i.num_operands == 2);
+        const a = self.fetch_op_u8(i.operands[0]);
+        const b = self.fetch_op_u8(i.operands[1]);
+
+        const res, const f = switch (i.op) {
+            OpType.ADD => Alu.add(a, b, self.rf.get_flags()),
+            else => unreachable,
+        };
+
+        self.rf.set_flags(f);
+        self.store_op_u8(i.operands[0], res);
     }
 };
 
