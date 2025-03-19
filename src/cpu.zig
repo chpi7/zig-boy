@@ -107,19 +107,25 @@ const RegFile = struct {
     // --------------- Flags ----------------
 
     inline fn set_flag(self: *RegFile, comptime flag: F, value: u1) void {
-        self.AF = (self.AF & 0xfff0) | F.set(@truncate(self.AF), flag, value);
+        const fmask: u4 = 1 << F.offset(flag);
+        const mask: u8 = @as(u8, fmask) << 4;
+        if (value == 1) {
+            self.AF |= mask;
+        } else {
+            self.AF &= ~mask;
+        }
     }
 
     inline fn set_flags(self: *RegFile, value: u4) void {
-        self.AF = (self.AF & 0xfff0) | value;
+        self.AF = (self.AF & 0xff0f) | @as(u8, value) << 4;
     }
 
     inline fn get_flag(self: *RegFile, comptime flag: F) u1 {
-        return F.get(@truncate(self.AF), flag);
+        return F.get(self.get_flags(), flag);
     }
 
     inline fn get_flags(self: *RegFile) u4 {
-        return @truncate(self.AF);
+        return @truncate(self.AF >> 4);
     }
 
     fn test_cc(self: *RegFile, cc: decoder.ConditionCode) bool {
@@ -198,10 +204,10 @@ pub const Cpu = struct {
             Dt.call_u16 => self.op_call(i),
             Dt.ccf => self.op_ccf(),
             Dt.cp_u8_u8 => self.op_alu_op_u8_u8_fl(i, Alu.cp),
-            Dt.cpl => unreachable,
-            Dt.daa => unreachable,
-            Dt.dec_u16 => unreachable,
-            Dt.dec_u8 => unreachable,
+            Dt.cpl => self.op_cpl(),
+            Dt.daa_u8 => self.op_alu_op_u8(i, Alu.daa),
+            Dt.dec_u16 => self.op_alu_op_u16(i, Alu.dec16),
+            Dt.dec_u8 => self.op_alu_op_u8(i, Alu.dec8),
             Dt.di => self.ime = 0,
             Dt.ei => self.ime = 1,
             Dt.halt => unreachable,
@@ -225,26 +231,21 @@ pub const Cpu = struct {
             Dt.res_u3_u8 => unreachable,
             Dt.ret => self.op_ret(i),
             Dt.ret_cc => self.op_ret(i),
-            Dt.ret_u8 => self.op_ret(i),
             Dt.reti => unreachable,
-            Dt.rl_u8 => unreachable,
-            Dt.rla => unreachable,
-            Dt.rlc_u8 => unreachable,
-            Dt.rlca => unreachable,
-            Dt.rr_u8 => unreachable,
-            Dt.rra => unreachable,
-            Dt.rrc_u8 => unreachable,
-            Dt.rrca => unreachable,
+            Dt.rl_u8, Dt.rla_u8 => self.op_alu_op_u8(i, Alu.rl8),
+            Dt.rlc_u8, Dt.rlca_u8 => self.op_alu_op_u8(i, Alu.rlc8),
+            Dt.rr_u8, Dt.rra_u8 => self.op_alu_op_u8(i, Alu.rr8),
+            Dt.rrc_u8, Dt.rrca_u8 => self.op_alu_op_u8(i, Alu.rrc8),
             Dt.rst_vec => unreachable,
-            Dt.sbc_u8_u8 => unreachable,
-            Dt.scf => unreachable,
+            Dt.sbc_u8_u8 => self.op_alu_op_u8_u8(i, Alu.sbc8),
+            Dt.scf => self.op_scf(),
             Dt.set_u3_u8 => unreachable,
-            Dt.sla_u8 => unreachable,
-            Dt.sra_u8 => unreachable,
-            Dt.srl_u8 => unreachable,
+            Dt.sla_u8 => self.op_alu_op_u8(i, Alu.sla8),
+            Dt.sra_u8 => self.op_alu_op_u8(i, Alu.sra8),
+            Dt.srl_u8 => self.op_alu_op_u8(i, Alu.srl8),
             Dt.stop_u8 => unreachable,
-            Dt.sub_u8_u8 => unreachable,
-            Dt.swap_u8 => unreachable,
+            Dt.sub_u8_u8 => self.op_alu_op_u8_u8(i, Alu.sub8),
+            Dt.swap_u8 => self.op_alu_op_u8(i, Alu.swap8),
             Dt.xor_u8_u8 => self.op_alu_op_u8_u8(i, Alu.xor8),
         }
 
@@ -277,7 +278,7 @@ pub const Cpu = struct {
         return @truncate(x);
     }
 
-    fn op_push(self: *Cpu, i: Instruction) void {
+    pub fn op_push(self: *Cpu, i: Instruction) void {
         std.debug.assert(i.operands[0].t == OperandType.reg16);
         const reg = i.operands[0].register;
 
@@ -287,13 +288,18 @@ pub const Cpu = struct {
         self.bus.write(self.rf.SP, lsb(self.rf.get(reg, u16)));
     }
 
-    fn op_pop(self: *Cpu, i: Instruction) void {
+    pub fn op_pop(self: *Cpu, i: Instruction) void {
         std.debug.assert(i.operands[0].t == OperandType.reg16);
 
-        const l: u16 = self.bus.read(self.rf.SP);
+        var l: u16 = self.bus.read(self.rf.SP);
         self.rf.SP +%= 1;
         const m: u16 = self.bus.read(self.rf.SP);
         self.rf.SP +%= 1;
+
+        if (i.operands[0].register == RegName.AF) {
+            // we need to only pop the flags into F and not anything else in the other 4 bits
+            l &= 0xf0;
+        }
 
         self.rf.set(u16, i.operands[0].register, m << 8 | l);
     }
@@ -362,7 +368,7 @@ pub const Cpu = struct {
 
         if (!is_cc or self.rf.test_cc(i.operands[0].cc)) {
             self.rf.PC = target;
-            std.log.debug("[cpu] pc = {x:04}", .{self.rf.PC});
+            std.log.debug("[cpu] jp {x:04}", .{self.rf.PC});
         }
     }
 
@@ -382,8 +388,7 @@ pub const Cpu = struct {
 
         if (!is_cc or self.rf.test_cc(i.operands[0].cc)) {
             const offset_as_u16: u16 = se_i8_in_u16(offset);
-            self.rf.PC +%= offset_as_u16;
-            std.log.debug("[cpu] pc = {x:04}", .{self.rf.PC});
+            self.rf.PC = self.rf.PC +% offset_as_u16;
         }
     }
 
@@ -498,6 +503,23 @@ pub const Cpu = struct {
     fn op_ccf(self: *Cpu) void {
         const flags_now = self.rf.get_flags();
         self.rf.set_flags(F.build(~F.c(flags_now), 0, 0, F.z(flags_now)));
+    }
+
+    fn op_scf(self: *Cpu) void {
+        var flags: F.T = @bitCast(self.rf.get_flags());
+        flags.c = 1;
+        flags.n = 0;
+        flags.h = 0;
+        self.rf.set_flags(@bitCast(flags));
+    }
+
+    fn op_cpl(self: *Cpu) void {
+        // complement accumulator
+        self.rf.AF ^= 0xff00; // flip bits in A
+        var flags: F.T = @bitCast(self.rf.get_flags());
+        flags.n = 1;
+        flags.h = 1;
+        self.rf.set_flags(@bitCast(flags));
     }
 
     fn fetch_op_u8(self: *Cpu, o: Operand) u8 {
@@ -917,11 +939,76 @@ test "LD HL SP+e8" {
 
 test "AF register get/set flags" {
     var rf = RegFile{};
-    rf.AF = 0xfff0;
+    rf.AF = 0xff0f;
     try testing.expectEqual(0, rf.get_flags());
 
     rf.set_flags(0b1010);
-    try testing.expectEqual(0xfffa, rf.AF);
+    try testing.expectEqual(0xffaf, rf.AF);
+}
+
+test "push/pop" {
+    var bus: Bus = Bus{};
+    var cpu: Cpu = Cpu{ .bus = &bus };
+
+    try testing.expectEqual(256, Bus.fake_mem_size);
+    cpu.rf.SP = 0xff;
+
+    cpu.rf.AF = 0x1234;
+
+    // --- push
+
+    const i: Instruction = Instruction{
+        .op = OpType.PUSH,
+        .num_operands = 1,
+        .operands = .{
+            Operand{ .t = OperandType.reg16, .register = RegName.AF },
+            Operand{ .t = OperandType.unused },
+            Operand{ .t = OperandType.unused },
+        },
+        .bytes = 1,
+    };
+
+    cpu.op_push(i);
+
+    try testing.expectEqual(0x12, cpu.bus.fake_memory[0xfe]);
+    try testing.expectEqual(0x34, cpu.bus.fake_memory[0xfd]);
+
+    // --- pop
+
+    cpu.rf.AF = 0;
+
+    const j: Instruction = Instruction{
+        .op = OpType.POP,
+        .num_operands = 1,
+        .operands = .{
+            Operand{ .t = OperandType.reg16, .register = RegName.AF },
+            Operand{ .t = OperandType.unused },
+            Operand{ .t = OperandType.unused },
+        },
+        .bytes = 1,
+    };
+
+    cpu.op_pop(j);
+    try testing.expectEqual(0x1234, cpu.rf.AF);
+}
+
+test "twos complement math sanity checks" {
+    const a: u16 = 1;
+
+    const b: u8 = @bitCast(@as(i8, -1));
+    try testing.expectEqual(0xff, b);
+
+    const c = Cpu.se_i8_in_u16(b);
+    try testing.expectEqual(0xffff, c);
+
+    const r = a +% c;
+    try testing.expectEqual(0, r);
+
+    const offset: u8 = 0xfe;
+    const offset_as_u16: u16 = Cpu.se_i8_in_u16(offset);
+    var pc: u16 = 0xcc5f;
+    pc = pc +% offset_as_u16;
+    try testing.expectEqual(0xcc5d, pc);
 }
 
 test "AF register get/set individual" {
@@ -933,16 +1020,26 @@ test "AF register get/set individual" {
     r.set_flag(F.C, 0);
     try testing.expectEqual(0, r.get_flag(F.C));
 
-    r.AF = 0b0000_0001;
+    r.AF = 0b1000_0000;
     try testing.expectEqual(1, r.get_flag(F.Z));
 
-    r.AF = 0b0000_0100;
+    r.AF = 0b0010_0000;
     try testing.expectEqual(1, r.get_flag(F.H));
 
     r.AF = 0;
     r.set_flag(F.Z, 1);
-    try testing.expectEqual(0b0000_0001, r.AF);
+    try testing.expectEqual(0b1000_0000, r.AF);
 
     r.set_flag(F.C, 1);
-    try testing.expectEqual(0b0000_1001, r.AF);
+    try testing.expectEqual(0b1001_0000, r.AF);
+}
+
+test "AF set flags in correct position" {
+    var r = RegFile{};
+    r.AF = 0;
+
+    r.set_flags(0xf);
+    try testing.expectEqual(0x00f0, r.AF);
+
+    try testing.expectEqual(0xf, r.get_flags());
 }

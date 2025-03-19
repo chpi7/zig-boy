@@ -19,6 +19,11 @@ pub const Lcd = struct {
         m2_int_sel: u1 = 0,
         lyc_int_sel: u1 = 0,
         _padding: u1 = 0,
+
+        fn write(self: *Stat, value: u8) void {
+            const write_mask: u8 = 0b1111_1000;
+            self.* = @bitCast(@as(u8, @bitCast(self.*)) & ~write_mask | (write_mask & value));
+        }
     };
 
     lcdc: Lcdc = Lcdc{},
@@ -27,10 +32,9 @@ pub const Lcd = struct {
     stat: Stat = Stat{},
 
     pub fn write(self: *Lcd, address: u16, value: u8) void {
-        const stat_write_mask: u8 = 0b1111_1000;
         switch (address) {
             0xff40 => self.lcdc = @bitCast(value), // lcdc
-            0xff41 => self.stat = @bitCast(@as(u8, @bitCast(self.stat)) & ~stat_write_mask | (stat_write_mask & value)), // stat
+            0xff41 => self.stat.write(value),
             0xff44 => {}, // ly, read only
             0xff45 => self.lyc = value, // lyc
             else => {}, // dont care

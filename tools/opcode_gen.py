@@ -148,18 +148,22 @@ class Instruction:
     def fix_mnemonic(self):
         if self.mnemonic.startswith("ILLEGAL"):
             self.mnemonic = "ILLEGAL"
+        elif self.mnemonic in ["RLA", "RLCA", "RRA", "RRCA", "DAA"]:
+            # These have A as an implicit r8 operand. Add it here so we don't
+            # have to handle that at runtime all the time.
+            self.operands.append(Operand(name="A", immediate=True))
 
     def pretty_str(self):
         return f"{self.mnemonic} {', '.join([o.pretty_str() for o in self.operands])}".strip()
 
     def dispatch_type(self):
-        treat_c_as_cc_ops = [0x38, 0xdc, 0xda];
+        treat_c_as_cc_ops = [0x38, 0xdc, 0xda, 0xd8];
         ops = '_'.join([o.dispatch_type(treat_c_as_cc=self.value in treat_c_as_cc_ops) for o in self.operands])
         return f"{self.mnemonic.lower()}{'_' if ops else ''}{ops}"
 
     def to_zig(self):
         filler_operand = Operand(name="unused", immediate=True).to_zig()
-        treat_c_as_cc_ops = [0x38, 0xdc, 0xda];
+        treat_c_as_cc_ops = [0x38, 0xdc, 0xda, 0xd8];
         operands = [o.to_zig(treat_c_as_cc=self.value in treat_c_as_cc_ops) for o in self.operands]
 
         num_operands = len(operands)

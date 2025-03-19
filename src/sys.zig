@@ -14,11 +14,35 @@ const Ieif = packed struct {
     padding: u3 = 0,
 };
 
+/// The JOYP/P1 register
+const JoypP1 = packed struct {
+    // 1 == not pressed
+    a_r: u1 = 1,
+    b_l: u1 = 1,
+    sel_u: u1 = 1,
+    sta_d: u1 = 1,
+    // 0 == <src> is selected (either dpad or buttons)
+    dpad: u1 = 0,
+    butt: u1 = 0,
+    _padding: u2 = 0,
+
+    fn write(self: *JoypP1, value: u8) void {
+        const write_mask: u8 = 0b1111_0000;
+        self.* = @bitCast(@as(u8, @bitCast(self.*)) & ~write_mask | (write_mask & value));
+    }
+
+    fn read(self: *JoypP1) u8 {
+        // TODO actually hook up input here at some point
+        return @bitCast(self.*);
+    }
+};
+
 const Io = struct {
-    pub const R = enum { serial_sb, serial_sc, ir_if, audio, not_impl };
+    pub const R = enum { joy, serial_sb, serial_sc, ir_if, audio, not_impl };
 
     pub fn ioreg(a: u16) R {
         return switch (a) {
+            0xff00 => R.joy,
             0xff01 => R.serial_sb,
             0xff02 => R.serial_sc,
             0xff0f => R.ir_if,
@@ -29,6 +53,7 @@ const Io = struct {
 
     serial: SerialPort = .{},
     ir_if: Ieif = .{}, // IF in docs (but is interrupt request)
+    joy: JoypP1 = .{},
     lcd: Lcd = .{},
 
     pub fn write(self: *Io, address: u16, value: u8) void {
@@ -46,6 +71,7 @@ const Io = struct {
         self.lcd.write(address, value);
 
         switch (r) {
+            R.joy => self.joy.write(value),
             R.serial_sb => self.serial.set_sb(value),
             R.serial_sc => self.serial.set_sc(value),
             R.ir_if => self.ir_if = @bitCast(value),
@@ -57,6 +83,7 @@ const Io = struct {
         const r = ioreg(address);
         // std.log.debug("[io] u8 {} <- {}", .{ r, value });
         var result: u8 = switch (r) {
+            R.joy => self.joy.read(),
             R.serial_sb => self.serial.sb,
             R.serial_sc => self.serial.sc,
             R.ir_if => @bitCast(self.ir_if),
@@ -67,13 +94,15 @@ const Io = struct {
         // should answer anyways.
         result |= self.lcd.read(address);
 
-        std.log.debug("[io]  read {} (={})", .{ r, result });
+        std.log.debug("[io] read {} (={})", .{ r, result });
         return result;
     }
 };
 
 const SerialPort = struct {
-    ouput_debug_buffer: [256]u8 = [_]u8{0} ** 256,
+    dbg_out_buf_pos: usize = 0,
+    dbg_out_buf: [64]u8 = [_]u8{' '} ** 64,
+
     sb: u8 = 0,
     sc: u8 = 0,
 
@@ -86,16 +115,28 @@ const SerialPort = struct {
             // set to 0x81, but immediately clear transfer in flight bit
             self.sc = 0x81 & 0b0111_1111;
             std.log.debug("[serial] tx requested", .{});
-            std.mem.rotate(u8, &self.ouput_debug_buffer, 1);
-            self.ouput_debug_buffer[self.ouput_debug_buffer.len - 1] = self.sb;
+            self.dbg_out_buf[self.dbg_out_buf_pos] = SerialPort.replace_printable(self.sb);
+            self.dbg_out_buf_pos = (self.dbg_out_buf_pos + 1) % self.dbg_out_buf.len;
+            if (self.dbg_out_buf_pos == 0) {
+                for (&self.dbg_out_buf) |*b| {
+                    b.* = 0;
+                }
+            }
             self.print_buf();
         }
     }
 
+    fn replace_printable(c: u8) u8 {
+        return switch (c) {
+            0 => '.',
+            '\n' => ' ',
+            '\t' => ' ',
+            else => c,
+        };
+    }
+
     fn print_buf(self: *SerialPort) void {
-        std.mem.reverse(u8, &self.ouput_debug_buffer);
-        std.log.debug("[serial] {s}", .{self.ouput_debug_buffer});
-        std.mem.reverse(u8, &self.ouput_debug_buffer);
+        std.log.debug("[serial] {s}", .{self.dbg_out_buf});
     }
 };
 
@@ -122,8 +163,10 @@ const MemoryMap = struct {
 
 /// 🚎 Brumm brumm!
 pub const Bus = struct {
+    pub const fake_mem_size: usize = 256;
+
     cartridge: ?*cartridge.Cartridge = null,
-    fake_memory: [2]u8 = .{ 0, 0 },
+    fake_memory: [256]u8 = [_]u8{0} ** 256, // used in unit tests
     io: Io = .{},
     ir_ie: Ieif = .{},
     wram_0: [4096]u8 = [_]u8{0} ** 4096,
@@ -186,7 +229,7 @@ pub const Bus = struct {
         if (self.cartridge) |c| {
             return c.read(address);
         } else {
-            return self.fake_memory[address % 2];
+            return self.fake_memory[address];
         }
     }
 
@@ -194,7 +237,7 @@ pub const Bus = struct {
         if (self.cartridge) |c| {
             c.write(address, value);
         } else {
-            self.fake_memory[address % 2] = value;
+            self.fake_memory[address] = value;
         }
     }
 };

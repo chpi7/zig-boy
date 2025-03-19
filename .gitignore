@@ -2,3 +2,4 @@
 .swp
 zig-out
 external/*
+log*
