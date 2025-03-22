@@ -32,6 +32,11 @@ pub fn main() !void {
     cpu.rf.PC = 0x0100;
     const max_cycles: usize = 100000000;
     for (0..max_cycles) |_| {
+        const pc = cpu.rf.PC;
         cpu.execute_instruction();
+        if (cpu.rf.PC == pc) {
+            // assume infinite loop at the end
+            break;
+        }
     }
 }

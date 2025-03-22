@@ -119,8 +119,8 @@ pub const Alu = struct {
         return .{ res, F.build(set_c, btoi(set_h), 0, F.z(f)) };
     }
 
-    pub fn add16i8(a: u16, b_in: i8, _: u4) struct { u16, u4 } {
-        const b: u16 = @bitCast(@as(i16, b_in));
+    /// Pass b in correctly encoded form already!
+    pub fn add16i8(a: u16, b: u16, _: u4) struct { u16, u4 } {
         const set_h = (((a & 0xf) +% (b & 0xf)) & 0x10) == 0x10;
         const set_c = (((a & 0xff) +% (b & 0xff)) & 0x100) == 0x100;
         const res = a +% b;
@@ -208,8 +208,10 @@ pub const Alu = struct {
 
     pub fn sub8(a: u8, b: u8, _: u4) struct { u8, u4 } {
         const c = btoi(b > a);
-        const h = btoi((a & 0xf) > (b & 0xf)); // apply same logic as for c, just with only 4 bits.
+        const h = btoi((b & 0xf) > (a & 0xf)); // apply same logic as for c, just with only 4 bits.
         const res: u8 = a -% b;
+        std.log.debug("{} - {} = {} (h {} c {})", .{ a, b, res, h, c });
+        std.log.debug("{x:02} - {x:02} = {x:02} (h {} c {})", .{ a, b, res, h, c });
         return .{ res, @bitCast(F.T{ .c = c, .h = h, .n = 1, .z = btoi(res == 0) }) };
     }
 

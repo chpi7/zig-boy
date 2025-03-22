@@ -202,7 +202,7 @@ pub const Cpu = struct {
         switch (dp) {
             Dt.adc_u8_u8 => self.op_alu_op_u8_u8(i, Alu.adc8),
             Dt.add_u16_u16 => self.op_alu_op_u16_u16(i, Alu.add16),
-            Dt.add_u16_u8 => unreachable, // TODO: This is SP + e8
+            Dt.add_u16_u8 => self.op_add_sp_e8(i),
             Dt.add_u8_u8 => self.op_alu_op_u8_u8(i, Alu.add8),
             Dt.and_u8_u8 => self.op_alu_op_u8_u8(i, Alu.and8),
             Dt.bit_u3_u8 => unreachable,
@@ -444,28 +444,13 @@ pub const Cpu = struct {
         if (i.operands[1].t == OperandType.imm16) {
             self.rf.set(u16, i.operands[0].register, i.operands[1].value);
         } else if (i.opcode == 0xf8) {
-            // debugging only:
-            const offset: i16 = @bitCast(se_i8_in_u16(i.operands[2].value));
-            // not sure if this is actually true when reading from the cartridge.
-            std.debug.assert(-128 <= offset and offset <= 127);
-
-            const offset_u: u16 = i.operands[2].value;
             const sp = self.rf.SP;
+            const imm = Cpu.se_i8_in_u16(self.fetch_op_u8(i.operands[2]));
 
-            std.log.debug("load special sp {}", .{sp});
+            const sp_new, const f = Alu.add16i8(sp, imm, self.rf.get_flags());
 
-            // Cheap way of getting the carry bits :)
-            _, const set_h = @addWithOverflow(@as(u4, @truncate(sp)), @as(u4, @truncate(offset_u)));
-            _, const set_c = @addWithOverflow(@as(u8, @truncate(sp)), @as(u8, @truncate(offset_u)));
-
-            self.rf.set_flag(F.H, set_h);
-            self.rf.set_flag(F.C, set_c);
-
-            self.rf.HL = sp +% se_i8_in_u16(offset_u);
-
-            std.log.debug("load special offset {}", .{offset});
-            std.log.debug("load special sp {}", .{self.rf.SP});
-            std.log.debug("load special hl {}", .{self.rf.HL});
+            self.rf.set_flags(f);
+            self.rf.HL = sp_new;
         } else if (i.operands[1].t == OperandType.reg16) {
             self.rf.set(u16, i.operands[0].register, self.rf.get(i.operands[1].register, u16));
         }
@@ -631,6 +616,17 @@ pub const Cpu = struct {
 
         self.rf.set_flags(f);
         self.store_op_u16(i.operands[0], res);
+    }
+
+    fn op_add_sp_e8(self: *Cpu, i: Instruction) void {
+        std.debug.assert(i.num_operands == 2);
+        const a = self.rf.SP;
+        const b = Cpu.se_i8_in_u16(self.fetch_op_u8(i.operands[1]));
+
+        const res, const f = Alu.add16i8(a, b, self.rf.get_flags());
+
+        self.rf.set_flags(f);
+        self.rf.SP = res;
     }
 };
 
