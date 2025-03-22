@@ -157,7 +157,8 @@ const RegFile = struct {
 
 pub const Cpu = struct {
     rf: RegFile = .{},
-    ime: u1 = 0, // global interrupt enable
+    /// global interrupt enable
+    ime: u1 = 0,
     bus: *Bus,
     halted: bool = false,
     instruction_debug_counter: u32 = 0,
@@ -175,6 +176,50 @@ pub const Cpu = struct {
             OperandType.imm8 => instr_mem[1],
             else => o.value, // nothing to change
         };
+    }
+
+    /// Tick forward one M cycle.
+    pub fn tick_m(self: *Cpu) void {
+        if (!self.handle_ir()) {
+            // TODO: only actually do this if the correct number of m cycles
+            // from the previous instruction has passed.
+            self.execute_instruction();
+        }
+    }
+
+    /// Return true if there was an interrupt that got handled.
+    pub fn handle_ir(self: *Cpu) bool {
+        const ie: u8 = @bitCast(self.bus.ir_ie);
+        const ir: u8 = @bitCast(self.bus.io.ir_if);
+        if (self.ime == 1 and (ie & ir) != 0) {
+            // bit 0 / vblank has the highest priority, bit 4 the lowest.
+            // at least one bit is set, idx can be at most 7.
+            const idx: u3 = @truncate(@ctz(ie & ir));
+            const mask: u8 = @as(u8, 1) << idx;
+            std.debug.assert(idx < 5);
+
+            // Clear the correct bit in the int request mask.
+            self.bus.io.ir_if = @bitCast(ir & ~mask);
+            // Disable interrupts while the current one is getting handled.
+            self.ime = 0;
+
+            // !!! This relies on the fact that in Ieif, the order of interrupts
+            // matches their addesses.
+            // 0 => 0x40 (vblank)
+            // 1 => 0x48 (stat / lcd)
+            // ...
+            const target_addr: u16 = 0x40 + @as(u16, idx) * 0x8;
+            std.log.debug("[cpu] handling int request ${x:02}", .{target_addr});
+
+            // this is the isr, it takes 5 m cycles:
+            // two m cycles where nothing happens
+            // push pc (two more m cycles)
+            // pc = $handler
+            self.call(target_addr);
+
+            return true;
+        }
+        return false;
     }
 
     pub fn execute_instruction(self: *Cpu) void {
@@ -317,6 +362,15 @@ pub const Cpu = struct {
         self.rf.set(u16, i.operands[0].register, m << 8 | l);
     }
 
+    fn call(self: *Cpu, target: u16) void {
+        self.rf.SP -%= 1;
+        self.bus.write(self.rf.SP, msb(self.rf.PC));
+        self.rf.SP -%= 1;
+        self.bus.write(self.rf.SP, lsb(self.rf.PC));
+        self.rf.PC = target;
+        self.rf.dump_debug();
+    }
+
     fn op_call(self: *Cpu, i: Instruction) void {
         var target: u16 = 0;
         var is_cc = false;
@@ -339,12 +393,7 @@ pub const Cpu = struct {
         }
 
         if (!is_cc or self.rf.test_cc(i.operands[0].cc)) {
-            self.rf.SP -%= 1;
-            self.bus.write(self.rf.SP, msb(self.rf.PC));
-            self.rf.SP -%= 1;
-            self.bus.write(self.rf.SP, lsb(self.rf.PC));
-            self.rf.PC = target;
-            self.rf.dump_debug();
+            self.call(target);
         }
     }
 

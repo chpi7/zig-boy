@@ -37,6 +37,63 @@ const JoypP1 = packed struct {
     }
 };
 
+pub const Timer = struct {
+    div: u8 = 0, // incremented at 16384Hz
+    tima: u8 = 0, // incremented at the frequency specified by tac
+    tma: u8 = 0,
+    tac: u8 = 0,
+
+    tick_4m_count: u64 = 0,
+    tima_modulo: u64 = 64, // clock select 0 equals increment every 256M cycles. 256 / 4 == 64.
+
+    bus: ?*Bus = null,
+
+    fn write(self: *Timer, address: u16, value: u8) void {
+        switch (address) {
+            0xff04 => self.div = 0, // writing any value resets the reg to 0
+            // 0xff05 --> can't write this register via the bus,
+            0xff06 => self.tma = value,
+            0xff07 => self.tac = (value & 0x3),
+            else => {},
+        }
+    }
+
+    fn read(self: *Timer, address: u16) u8 {
+        return switch (address) {
+            0xff04 => self.div,
+            0xff05 => self.tima,
+            0xff06 => self.tma,
+            0xff07 => self.tac,
+            else => 0,
+        };
+    }
+
+    inline fn tima_enabled(self: *Timer) bool {
+        return (self.tac & 0b100) != 0;
+    }
+
+    /// Call this at 262144Hz to tick DIV and TIMA at the correct rates.
+    ///
+    /// This is the fastest frequency that TIMA increments at and 16x the
+    /// frequency that DIV has to increment at.
+    pub fn tick_4m(self: *Timer) void {
+        self.tick_4m_count += 1;
+
+        if (self.tick_4m_count % 16 == 0) {
+            self.div +%= 1;
+        }
+
+        if (self.tima_enabled() and (self.tick_4m_count % self.tima_modulo) == 0) {
+            self.tima +%= 1;
+            if (self.tima == 0) {
+                self.tima = self.tma;
+                std.debug.assert(self.bus != null); // call bus.link()!
+                self.bus.?.io.ir_if.timer = 1;
+            }
+        }
+    }
+};
+
 const Io = struct {
     pub const R = enum { joy, serial_sb, serial_sc, ir_if, audio, not_impl };
 
@@ -55,6 +112,7 @@ const Io = struct {
     ir_if: Ieif = .{}, // IF in docs (but is interrupt request)
     joy: JoypP1 = .{},
     lcd: Lcd = .{},
+    timer: Timer = .{},
 
     pub fn write(self: *Io, address: u16, value: u8) void {
         const r = ioreg(address);
@@ -69,6 +127,7 @@ const Io = struct {
         // targeting a register directly already.
 
         self.lcd.write(address, value);
+        self.timer.write(address, value);
 
         switch (r) {
             R.joy => self.joy.write(value),
@@ -93,6 +152,7 @@ const Io = struct {
         // This is basically what a bus would do. Only one connected device
         // should answer anyways.
         result |= self.lcd.read(address);
+        result |= self.timer.read(address);
 
         std.log.debug("[io] read {} (={})", .{ r, result });
         return result;
@@ -123,6 +183,7 @@ const SerialPort = struct {
                 }
             }
             self.print_buf();
+            // TODO: request interrupt (8 serial clock cycles after sc has been set)
         }
     }
 
@@ -173,6 +234,13 @@ pub const Bus = struct {
     wram_1: [4096]u8 = [_]u8{0} ** 4096, // Non CBG only has one bank here
     hram: [0x80]u8 = [_]u8{0} ** 0x80, // technically only 0x79, from ff80-fffe. Mapper handles that though.
 
+    /// This set the Bus pointer in the various children of the bus.
+    ///
+    /// Mostly to allow accessing the interrupt request register.
+    pub fn link(self: *Bus) void {
+        self.io.timer.bus = self;
+    }
+
     pub fn read(self: *Bus, address: u16) u8 {
         const Region = MemoryMap.Region;
         const unmapped_result = 0x00;
@@ -194,6 +262,7 @@ pub const Bus = struct {
         std.log.debug("[bus] read({x:04}) -> {x:02}", .{ address, result });
         return result;
     }
+
     pub fn write(self: *Bus, address: u16, value: u8) void {
         const Region = MemoryMap.Region;
 
