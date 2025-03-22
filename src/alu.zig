@@ -147,24 +147,28 @@ pub const Alu = struct {
     }
 
     pub fn daa(a: u8, f: u4) struct { u8, u4 } {
+        const fl: Flags.T = @bitCast(f);
+
         var adjust: u8 = 0;
-        var res: u8 = 0;
         var carry: u1 = 0;
 
-        if (F.n(f) == 1) {
-            if (F.h(f) == 1) adjust += 0x6;
-            if (F.c(f) == 1) adjust += 0x60;
+        if (fl.h == 1 or (fl.n == 0 and (a & 0xf) > 0x9)) {
+            adjust |= 0x6;
+        }
+
+        if (fl.c == 1 or (fl.n == 0 and a > 0x99)) {
+            adjust |= 0x60;
+            carry = 1;
+        }
+
+        var res: u8 = 0;
+        if (fl.n == 1) {
             res = a -% adjust;
         } else {
-            if (F.h(f) == 1 or (a & 0xf > 0x9)) adjust += 0x6;
-            if (F.c(f) == 1 or (a > 0x99)) {
-                carry = 1;
-                adjust += 0x60;
-            }
             res = a +% adjust;
         }
 
-        return .{ res, F.build(carry, 0, F.n(f), btoi(res == 0)) };
+        return .{ res, @bitCast(F.T{ .c = carry, .z = btoi(res == 0), .n = fl.n, .h = 0 }) };
     }
 
     pub fn dec8(a: u8, f: u4) struct { u8, u4 } {
@@ -205,7 +209,7 @@ pub const Alu = struct {
     pub fn sub8(a: u8, b: u8, _: u4) struct { u8, u4 } {
         const c = btoi(b > a);
         const h = btoi((a & 0xf) > (b & 0xf)); // apply same logic as for c, just with only 4 bits.
-        const res = a -% b;
+        const res: u8 = a -% b;
         return .{ res, @bitCast(F.T{ .c = c, .h = h, .n = 1, .z = btoi(res == 0) }) };
     }
 
@@ -356,4 +360,33 @@ test "Flag bit position" {
 
     const a: u4 = @bitCast(F.T{ .z = 1 });
     try testing.expectEqual(0b1000, a);
+}
+
+fn to_bcd(a: u8) u8 {
+    std.debug.assert(a < 100);
+    const digit1: u8 = 0x0f & (a / 10);
+    const digit0: u8 = 0x0f & (a % 10);
+    return digit1 << 4 | digit0;
+}
+
+test "daa add" {
+    for (0..100) |aa| {
+        for (0..100) |bb| {
+            const a: u8 = to_bcd(@truncate(aa));
+            const b: u8 = to_bcd(@truncate(bb));
+
+            const r, const f = Alu.add8(a, b, 0);
+
+            const adjusted, _ = Alu.daa(r, f);
+
+            const dec_sum = (aa +% bb) % 100;
+            const digit1 = dec_sum / 10;
+            const digit0 = dec_sum % 10;
+
+            // std.log.debug("{} + {} = {}{} ({x} + {x} = {x})", .{ aa, bb, digit1, digit0, a, b, adjusted });
+
+            try testing.expectEqual(digit0, 0xF & adjusted);
+            try testing.expectEqual(digit1, 0xF & (adjusted >> 4));
+        }
+    }
 }

@@ -3,7 +3,7 @@ const sys = @import("sys.zig");
 const Bus = sys.Bus;
 
 const alu = @import("alu.zig");
-const Alu = alu.Alu;
+pub const Alu = alu.Alu;
 const F = Alu.F;
 
 pub const decoder = @import("instructions_generated.zig");
@@ -25,7 +25,7 @@ const RegFile = struct {
         if (t == u8) {
             return switch (n) {
                 RegName.A => @as(t, RegFile.get_hi(self.AF)),
-                RegName.F => @as(t, RegFile.get_lo(self.AF)),
+                RegName.F => @as(t, RegFile.get_lo(self.AF)) & 0xF0,
                 RegName.B => @as(t, RegFile.get_hi(self.BC)),
                 RegName.C => @as(t, RegFile.get_lo(self.BC)),
                 RegName.D => @as(t, RegFile.get_hi(self.DE)),
@@ -36,7 +36,7 @@ const RegFile = struct {
             };
         } else if (t == u16) {
             return switch (n) {
-                RegName.AF => @as(t, self.AF),
+                RegName.AF => @as(t, self.AF) & 0xFFF0,
                 RegName.BC => @as(t, self.BC),
                 RegName.DE => @as(t, self.DE),
                 RegName.HL => @as(t, self.HL),
@@ -49,7 +49,13 @@ const RegFile = struct {
     }
 
     fn set(self: *RegFile, comptime t: type, n: RegName, value: t) void {
-        self.get_ptr(n, t).* = value;
+        if (t == u16 and n == RegName.AF) {
+            self.get_ptr(n, t).* = (value & 0xFFF0);
+        } else if (t == u8 and n == RegName.F) {
+            self.get_ptr(n, t).* = (value & 0xF0);
+        } else {
+            self.get_ptr(n, t).* = value;
+        }
     }
 
     fn get_ptr(self: *RegFile, n: RegName, comptime t: type) *t {
@@ -639,9 +645,9 @@ test "R/W GP Registers" {
     const R = RegName;
 
     for (
-        [_]R{ R.AF, R.BC, R.DE, R.HL },
-        [_]R{ R.A, R.B, R.D, R.H },
-        [_]R{ R.F, R.C, R.E, R.L },
+        [_]R{ R.BC, R.DE, R.HL },
+        [_]R{ R.B, R.D, R.H },
+        [_]R{ R.C, R.E, R.L },
     ) |ab, a, b| {
         const ptr = cpu.rf.get_ptr(ab, u16);
         ptr.* = 0x1234;
@@ -929,9 +935,6 @@ test "LD HL SP+e8" {
 
         cpu.op_ld(i);
         try testing.expectEqual(c.expect, cpu.rf.HL);
-
-        // try testing.expectEqual(c.expect_c, cpu.rf.flag_get(F.C));
-        // try testing.expectEqual(c.expect_h, cpu.rf.flag_get(F.H));
     }
 }
 
@@ -939,11 +942,11 @@ test "LD HL SP+e8" {
 
 test "AF register get/set flags" {
     var rf = RegFile{};
-    rf.AF = 0xff0f;
+    rf.set(u16, RegName.AF, 0xff0f);
     try testing.expectEqual(0, rf.get_flags());
 
     rf.set_flags(0b1010);
-    try testing.expectEqual(0xffaf, rf.AF);
+    try testing.expectEqual(0xffa0, rf.AF);
 }
 
 test "push/pop" {
@@ -953,7 +956,7 @@ test "push/pop" {
     try testing.expectEqual(256, Bus.fake_mem_size);
     cpu.rf.SP = 0xff;
 
-    cpu.rf.AF = 0x1234;
+    cpu.rf.AF = 0x1230;
 
     // --- push
 
@@ -971,7 +974,7 @@ test "push/pop" {
     cpu.op_push(i);
 
     try testing.expectEqual(0x12, cpu.bus.fake_memory[0xfe]);
-    try testing.expectEqual(0x34, cpu.bus.fake_memory[0xfd]);
+    try testing.expectEqual(0x30, cpu.bus.fake_memory[0xfd]);
 
     // --- pop
 
@@ -989,7 +992,8 @@ test "push/pop" {
     };
 
     cpu.op_pop(j);
-    try testing.expectEqual(0x1234, cpu.rf.AF);
+    // try testing.expectEqual(0x1234, cpu.rf.AF);
+    try testing.expectEqual(0x1230, cpu.rf.AF);
 }
 
 test "twos complement math sanity checks" {
