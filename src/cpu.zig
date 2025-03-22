@@ -205,7 +205,7 @@ pub const Cpu = struct {
             Dt.add_u16_u8 => self.op_add_sp_e8(i),
             Dt.add_u8_u8 => self.op_alu_op_u8_u8(i, Alu.add8),
             Dt.and_u8_u8 => self.op_alu_op_u8_u8(i, Alu.and8),
-            Dt.bit_u3_u8 => unreachable,
+            Dt.bit_u3_u8 => self.op_bit(i),
             Dt.call_cc_u16 => self.op_call(i),
             Dt.call_u16 => self.op_call(i),
             Dt.ccf => self.op_ccf(),
@@ -216,7 +216,7 @@ pub const Cpu = struct {
             Dt.dec_u8 => self.op_alu_op_u8(i, Alu.dec8),
             Dt.di => self.ime = 0,
             Dt.ei => self.ime = 1,
-            Dt.halt => unreachable,
+            Dt.halt => self.op_halt(),
             Dt.illegal => unreachable,
             Dt.inc_u16 => self.op_alu_op_u16(i, Alu.inc16),
             Dt.inc_u8 => self.op_alu_op_u8(i, Alu.inc8),
@@ -234,22 +234,29 @@ pub const Cpu = struct {
             Dt.pop_u16 => self.op_pop(i),
             Dt.prefix => unreachable,
             Dt.push_u16 => self.op_push(i),
-            Dt.res_u3_u8 => unreachable,
+            Dt.res_u3_u8 => self.op_res(i),
             Dt.ret => self.op_ret(i),
             Dt.ret_cc => self.op_ret(i),
-            Dt.reti => unreachable,
-            Dt.rl_u8, Dt.rla_u8 => self.op_alu_op_u8(i, Alu.rl8),
-            Dt.rlc_u8, Dt.rlca_u8 => self.op_alu_op_u8(i, Alu.rlc8),
-            Dt.rr_u8, Dt.rra_u8 => self.op_alu_op_u8(i, Alu.rr8),
-            Dt.rrc_u8, Dt.rrca_u8 => self.op_alu_op_u8(i, Alu.rrc8),
-            Dt.rst_vec => unreachable,
+            Dt.reti => {
+                self.ime = 1;
+                self.op_ret(i);
+            },
+            Dt.rl_u8 => self.op_alu_op_u8_pref(i, Alu.rl8),
+            Dt.rla_u8 => self.op_alu_op_u8(i, Alu.rl8),
+            Dt.rlc_u8 => self.op_alu_op_u8_pref(i, Alu.rlc8),
+            Dt.rlca_u8 => self.op_alu_op_u8(i, Alu.rlc8),
+            Dt.rr_u8 => self.op_alu_op_u8_pref(i, Alu.rr8),
+            Dt.rra_u8 => self.op_alu_op_u8(i, Alu.rr8),
+            Dt.rrc_u8 => self.op_alu_op_u8_pref(i, Alu.rrc8),
+            Dt.rrca_u8 => self.op_alu_op_u8(i, Alu.rrc8),
+            Dt.rst_vec => self.op_call(i),
             Dt.sbc_u8_u8 => self.op_alu_op_u8_u8(i, Alu.sbc8),
             Dt.scf => self.op_scf(),
-            Dt.set_u3_u8 => unreachable,
+            Dt.set_u3_u8 => self.op_set(i),
             Dt.sla_u8 => self.op_alu_op_u8(i, Alu.sla8),
             Dt.sra_u8 => self.op_alu_op_u8(i, Alu.sra8),
             Dt.srl_u8 => self.op_alu_op_u8(i, Alu.srl8),
-            Dt.stop_u8 => unreachable,
+            Dt.stop_u8 => self.op_stop(),
             Dt.sub_u8_u8 => self.op_alu_op_u8_u8(i, Alu.sub8),
             Dt.swap_u8 => self.op_alu_op_u8(i, Alu.swap8),
             Dt.xor_u8_u8 => self.op_alu_op_u8_u8(i, Alu.xor8),
@@ -321,8 +328,14 @@ pub const Cpu = struct {
             is_cc = true;
         } else {
             std.debug.assert(i.num_operands == 1);
-            std.debug.assert(i.operands[0].t == OperandType.imm16);
-            target = i.operands[0].value;
+            std.debug.assert(i.operands[0].t == OperandType.imm16 or
+                i.operands[0].t == OperandType.vec);
+            switch (i.operands[0].t) {
+                OperandType.imm16 => target = i.operands[0].value,
+                // reset vec is just the target address
+                OperandType.vec => target = i.operands[0].value,
+                else => unreachable,
+            }
         }
 
         if (!is_cc or self.rf.test_cc(i.operands[0].cc)) {
@@ -352,6 +365,16 @@ pub const Cpu = struct {
             self.rf.PC = m << 8 | l;
             std.log.debug("[cpu] pc = {x:04}", .{self.rf.PC});
         }
+    }
+
+    fn op_stop(_: *Cpu) void {
+        // TODO: decide what to do here
+        // prob nothing: "no licensed rom makes use of STOP outside of CGB
+        // speed switching"
+    }
+
+    fn op_halt(_: *Cpu) void {
+        // TODO: ?
     }
 
     fn op_jp(self: *Cpu, i: Instruction) void {
@@ -513,6 +536,41 @@ pub const Cpu = struct {
         self.rf.set_flags(@bitCast(flags));
     }
 
+    fn op_bit(self: *Cpu, i: Instruction) void {
+        std.debug.assert(i.operands[0].t == OperandType.bit3);
+
+        const mask: u8 = @as(u8, 1) << @as(u3, @truncate(i.operands[0].value));
+        const v = self.fetch_op_u8(i.operands[1]);
+
+        var flags: F.T = @bitCast(self.rf.get_flags());
+        flags.n = 0;
+        flags.h = 1;
+        flags.z = if ((v & mask) == 0) 1 else 0;
+        self.rf.set_flags(@bitCast(flags));
+    }
+
+    fn op_set(self: *Cpu, i: Instruction) void {
+        std.debug.assert(i.operands[0].t == OperandType.bit3);
+
+        const mask: u8 = @as(u8, 1) << @as(u3, @truncate(i.operands[0].value));
+        var v = self.fetch_op_u8(i.operands[1]);
+
+        v |= mask;
+
+        self.store_op_u8(i.operands[1], v);
+    }
+
+    fn op_res(self: *Cpu, i: Instruction) void {
+        std.debug.assert(i.operands[0].t == OperandType.bit3);
+
+        const mask: u8 = @as(u8, 1) << @as(u3, @truncate(i.operands[0].value));
+        var v = self.fetch_op_u8(i.operands[1]);
+
+        v &= ~mask;
+
+        self.store_op_u8(i.operands[1], v);
+    }
+
     fn fetch_op_u8(self: *Cpu, o: Operand) u8 {
         // source can be one of reg8, imm8, [reg16], [imm16]
         std.debug.assert(o.t == OperandType.reg8 or
@@ -564,12 +622,31 @@ pub const Cpu = struct {
         }
     }
 
+    fn op_alu_op_u8_pref(self: *Cpu, i: Instruction, op: Alu.op8_t) void {
+        self.op_alu_op_u8_gen(i, op, true);
+    }
+
     fn op_alu_op_u8(self: *Cpu, i: Instruction, op: Alu.op8_t) void {
+        self.op_alu_op_u8_gen(i, op, false);
+    }
+
+    inline fn op_alu_op_u8_gen(self: *Cpu, i: Instruction, op: Alu.op8_t, comptime prefixed: bool) void {
         std.debug.assert(i.num_operands == 1);
 
         const x = self.fetch_op_u8(i.operands[0]);
 
-        const res, const f = op(x, self.rf.get_flags());
+        const res, var f = op(x, self.rf.get_flags());
+
+        if (!prefixed) {
+            switch (i.opcode) {
+                0x07, 0x17, 0x0f, 0x1f => {
+                    // RLCA, RLA, RRCA, RRA always set Z flag = 0
+                    // not super nice to fix this here but it's fine for now.
+                    f &= ~(@as(u4, 1) << F.offset(F.Z));
+                },
+                else => {},
+            }
+        }
 
         self.rf.set_flags(f);
         self.store_op_u8(i.operands[0], res);

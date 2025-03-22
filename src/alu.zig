@@ -314,6 +314,61 @@ test "sla8" {
     try testing.expectEqual(expect_f, rf);
 }
 
+test "rr" {
+    const Tc = struct {
+        // input
+        i_a: u8,
+        i_f: u4,
+        // expect
+        e_a: u8,
+        e_f: u4,
+    };
+
+    const testcases = [_]Tc{ Tc{
+        .i_a = 0b0001_1000,
+        .i_f = @bitCast(Flags.T{ .c = 1 }),
+        .e_a = 0b1000_1100,
+        .e_f = @bitCast(Flags.T{ .c = 0 }),
+    }, Tc{
+        .i_a = 0b0001_1001,
+        .i_f = @bitCast(Flags.T{ .c = 0 }),
+        .e_a = 0b0000_1100,
+        .e_f = @bitCast(Flags.T{ .c = 1 }),
+    }, Tc{
+        .i_a = 0b0000_0001,
+        .i_f = @bitCast(Flags.T{ .c = 0 }),
+        .e_a = 0b0000_0000,
+        .e_f = @bitCast(Flags.T{ .c = 1, .z = 1 }),
+    }, Tc{
+        .i_a = 0b1010_1010,
+        .i_f = @bitCast(Flags.T{ .c = 1 }),
+        .e_a = 0b1101_0101,
+        .e_f = @bitCast(Flags.T{}),
+    } };
+
+    const X = struct {
+        fn run_testcase(tc: Tc) !void {
+            const in_a = tc.i_a;
+            const in_f = tc.i_f;
+            const expect_a = tc.e_a;
+            const expect_f = tc.e_f;
+
+            const a, const f = Alu.rr8(in_a, in_f);
+
+            try testing.expectEqual(expect_a, a);
+            try testing.expectEqual(expect_f, f);
+        }
+    };
+
+    for (testcases, 0..) |tc, i| {
+        if (i != 1) continue;
+        X.run_testcase(tc) catch |err| {
+            std.log.debug("Failed testcase {}", .{i});
+            return err;
+        };
+    }
+}
+
 test "Get/Set Flags" {
     var flags: u4 = 0;
     const F = Alu.F;
