@@ -123,7 +123,8 @@ const Io = struct {
     }
 
     serial: SerialPort = .{},
-    ir_if: Ieif = .{}, // IF in docs (but is interrupt request)
+    /// IF in docs (but is interrupt request)
+    ir_if: Ieif = .{},
     joy: JoypP1 = .{},
     lcd: Lcd = .{},
     timer: Timer = .{},

@@ -3,4 +3,4 @@
 zig-out
 external/*
 log*
-output-buffer
+output-*.txt

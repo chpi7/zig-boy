@@ -26,11 +26,11 @@ pub fn main() !void {
     bus.link();
 
     cpu.rf.PC = 0x0100;
-    const max_cycles: usize = 100000000;
-    for (0..max_cycles) |_| {
+    while (true) {
         const pc = cpu.rf.PC;
         cpu.step();
-        if (cpu.rf.PC == pc) {
+        if (cpu.rf.PC == pc and !cpu.halted) {
+            std.log.debug("stop, pc not changed and not halted", .{});
             // assume infinite loop at the end
             break;
         }

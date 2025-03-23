@@ -168,10 +168,21 @@ pub const Cpu = struct {
     /// This ticks the rest of the system the correct number of cycles too.
     pub fn step(self: *Cpu) void {
         var m_cycles_passed: u8 = 0;
-        if (!self.handle_ir()) {
+        const int_handled, const int_pending = self.handle_ir();
+
+        if (int_pending) {
+            // handle_ir already handled the interrupt or not depending on IME.
+            // So we can unhalt here as long as anything was pending.
+            self.halted = false;
+        }
+
+        if (int_handled) {
+            m_cycles_passed = 5;
+        } else if (!self.halted) {
             m_cycles_passed = self.execute_instruction();
         } else {
-            m_cycles_passed = 5;
+            // if we are halted we still need to tick the timers
+            m_cycles_passed = 1;
         }
 
         for (0..m_cycles_passed) |_| {
@@ -199,11 +210,14 @@ pub const Cpu = struct {
         self.bus.io.timer.tick_1m();
     }
 
-    /// Return true if there was an interrupt that got handled.
-    fn handle_ir(self: *Cpu) bool {
+    /// Return {interrupt_handled_flag, interrupt_pending_flag};
+    ///
+    /// (handled implies pending)
+    fn handle_ir(self: *Cpu) struct { bool, bool } {
         const ie: u8 = @bitCast(self.bus.ir_ie);
         const ir: u8 = @bitCast(self.bus.io.ir_if);
-        if (self.ime == 1 and (ie & ir) != 0) {
+        const pending = (ie & ir) != 0;
+        if (self.ime == 1 and pending) {
             // bit 0 / vblank has the highest priority, bit 4 the lowest.
             // at least one bit is set, idx can be at most 7.
             const idx: u3 = @truncate(@ctz(ie & ir));
@@ -229,9 +243,9 @@ pub const Cpu = struct {
             // pc = $handler
             self.call(target_addr);
 
-            return true;
+            return .{ true, true };
         }
-        return false;
+        return .{ false, pending };
     }
 
     fn execute_instruction(self: *Cpu) u8 {
@@ -465,8 +479,33 @@ pub const Cpu = struct {
         // speed switching"
     }
 
-    fn op_halt(_: *Cpu) void {
-        // TODO: ?
+    fn op_halt(self: *Cpu) void {
+        const ie: u8 = @bitCast(self.bus.ir_ie);
+        const ir: u8 = @bitCast(self.bus.io.ir_if);
+        const interrupts_pending = (ir & ie) != 0;
+
+        if (self.ime == 1) {
+            // enter low power mode
+            // after the next interrupt is serviced, wake up
+            // execute the next instruction after halt
+            self.halted = true;
+        } else if (!interrupts_pending) {
+            // like above, except we don't call the handler
+            self.halted = true;
+        } else {
+            // don't halt, continue execution, byte after read twice, pc only
+            // incremented once though
+            // Probably fine if we just ignore that though...
+        }
+
+        // --> this is it here, on step, we check if we are halted.
+        // If yes, only wake up if an interrupt becomes pending.
+        // In case one is pending now, service it according to the ime flag.
+        // (which you can not change while the cpu is halted)
+        //
+        // If the ime flag is set PC points to the next instruction after the HALT.
+        // When the interrupt is serviced, that PC gets pushed, the handler called,
+        // on RETI we jump back to the correct instruction.
     }
 
     fn op_jp(self: *Cpu, i: Instruction) void {
