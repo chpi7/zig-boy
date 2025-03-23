@@ -161,7 +161,23 @@ pub const Cpu = struct {
     ime: u1 = 0,
     bus: *Bus,
     halted: bool = false,
+    cc_status: u2 = 0, // 0: no cc, 1: cc + not taken, 2: cc + taken     This way cc_status % 2 can be used as the decoder index.
     instruction_debug_counter: u32 = 0,
+
+    /// Execute one instruction or handle an interrupt.
+    /// This ticks the rest of the system the correct number of cycles too.
+    pub fn step(self: *Cpu) void {
+        var m_cycles_passed: u8 = 0;
+        if (!self.handle_ir()) {
+            m_cycles_passed = self.execute_instruction();
+        } else {
+            m_cycles_passed = 5;
+        }
+
+        for (0..m_cycles_passed) |_| {
+            self.tick_sys_1m();
+        }
+    }
 
     fn decode_next(self: *Cpu) struct { Instruction, bool } {
         const decode_result = decoder.decode_instruction(self.bus.read(self.rf.PC));
@@ -178,17 +194,13 @@ pub const Cpu = struct {
         };
     }
 
-    /// Tick forward one M cycle.
-    pub fn tick_m(self: *Cpu) void {
-        if (!self.handle_ir()) {
-            // TODO: only actually do this if the correct number of m cycles
-            // from the previous instruction has passed.
-            self.execute_instruction();
-        }
+    /// This ticks the rest of the system forward 1 m cycle.
+    fn tick_sys_1m(self: *Cpu) void {
+        self.bus.io.timer.tick_1m();
     }
 
     /// Return true if there was an interrupt that got handled.
-    pub fn handle_ir(self: *Cpu) bool {
+    fn handle_ir(self: *Cpu) bool {
         const ie: u8 = @bitCast(self.bus.ir_ie);
         const ir: u8 = @bitCast(self.bus.io.ir_if);
         if (self.ime == 1 and (ie & ir) != 0) {
@@ -222,7 +234,7 @@ pub const Cpu = struct {
         return false;
     }
 
-    pub fn execute_instruction(self: *Cpu) void {
+    fn execute_instruction(self: *Cpu) u8 {
         var i, const is_cb = self.decode_next();
 
         if (is_cb) {
@@ -241,6 +253,8 @@ pub const Cpu = struct {
         decode_imm(&i.operands[2], &next_two_bytes);
 
         self.rf.PC += i.bytes; // this accounts for prefix + immediates
+
+        self.cc_status = 0;
 
         const dp = if (is_cb) decoder.opcode_to_dp_cb(i.opcode) else decoder.opcode_to_dp(i.opcode);
         const Dt = decoder.DispatchType;
@@ -313,8 +327,18 @@ pub const Cpu = struct {
             self.rf.dump_debug();
         }
 
+        const m_cycle_idx: u1 = @truncate(self.cc_status % 2);
+        var m_cycles: u8 = 0;
+        if (is_cb) {
+            m_cycles = decoder.get_m_cycles_cb(i.opcode, m_cycle_idx);
+        } else {
+            m_cycles = decoder.get_m_cycles(i.opcode, m_cycle_idx);
+        }
+
         std.log.debug("[cpu] execute done", .{});
         self.instruction_debug_counter +%= 1;
+
+        return m_cycles;
     }
 
     /// Prepare i8 stored in u16 immediate for arithmetic.
@@ -362,6 +386,17 @@ pub const Cpu = struct {
         self.rf.set(u16, i.operands[0].register, m << 8 | l);
     }
 
+    fn update_cc_status(self: *Cpu, is_cc: bool, taken: bool) void {
+        std.debug.assert(self.cc_status == 0); // should always be reset.
+        if (is_cc) {
+            if (taken) {
+                self.cc_status = 2;
+            } else {
+                self.cc_status = 1;
+            }
+        }
+    }
+
     fn call(self: *Cpu, target: u16) void {
         self.rf.SP -%= 1;
         self.bus.write(self.rf.SP, msb(self.rf.PC));
@@ -392,9 +427,13 @@ pub const Cpu = struct {
             }
         }
 
+        var taken = false;
         if (!is_cc or self.rf.test_cc(i.operands[0].cc)) {
             self.call(target);
+            taken = true;
         }
+
+        self.update_cc_status(is_cc, taken);
     }
 
     fn op_ret(self: *Cpu, i: Instruction) void {
@@ -405,6 +444,7 @@ pub const Cpu = struct {
             is_cc = true;
         }
 
+        var taken = false;
         if (!is_cc or self.rf.test_cc(i.operands[0].cc)) {
             const l: u16 = self.bus.read(self.rf.SP);
             self.rf.SP +%= 1;
@@ -413,7 +453,10 @@ pub const Cpu = struct {
 
             self.rf.PC = m << 8 | l;
             std.log.debug("[cpu] pc = {x:04}", .{self.rf.PC});
+
+            taken = true;
         }
+        self.update_cc_status(is_cc, taken);
     }
 
     fn op_stop(_: *Cpu) void {
@@ -444,10 +487,14 @@ pub const Cpu = struct {
             target = self.rf.HL;
         }
 
+        var taken = true;
         if (!is_cc or self.rf.test_cc(i.operands[0].cc)) {
             self.rf.PC = target;
             std.log.debug("[cpu] jp {x:04}", .{self.rf.PC});
+            taken = true;
         }
+
+        self.update_cc_status(is_cc, taken);
     }
 
     fn op_jr(self: *Cpu, i: Instruction) void {
@@ -464,10 +511,13 @@ pub const Cpu = struct {
             std.debug.assert(i.operands[0].t == OperandType.imm8);
         }
 
+        var taken = false;
         if (!is_cc or self.rf.test_cc(i.operands[0].cc)) {
             const offset_as_u16: u16 = se_i8_in_u16(offset);
             self.rf.PC = self.rf.PC +% offset_as_u16;
+            taken = true;
         }
+        self.update_cc_status(is_cc, taken);
     }
 
     pub fn op_ldh(self: *Cpu, i: Instruction) void {

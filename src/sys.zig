@@ -43,6 +43,7 @@ pub const Timer = struct {
     tma: u8 = 0,
     tac: u8 = 0,
 
+    tick_1m_count: u64 = 0,
     tick_4m_count: u64 = 0,
     tima_modulo: u64 = 64, // clock select 0 equals increment every 256M cycles. 256 / 4 == 64.
 
@@ -51,9 +52,17 @@ pub const Timer = struct {
     fn write(self: *Timer, address: u16, value: u8) void {
         switch (address) {
             0xff04 => self.div = 0, // writing any value resets the reg to 0
-            // 0xff05 --> can't write this register via the bus,
+            0xff05 => self.tima = value,
             0xff06 => self.tma = value,
-            0xff07 => self.tac = (value & 0x3),
+            0xff07 => {
+                self.tac = (value & 0b0000_0111);
+                self.tima_modulo = switch (@as(u2, @truncate(self.tac & 0b11))) {
+                    0b00 => 64, // 256 / 4
+                    0b01 => 1, // 4 / 4
+                    0b10 => 4, // 16 / 4
+                    0b11 => 16, // 64 / 4
+                };
+            },
             else => {},
         }
     }
@@ -72,11 +81,16 @@ pub const Timer = struct {
         return (self.tac & 0b100) != 0;
     }
 
-    /// Call this at 262144Hz to tick DIV and TIMA at the correct rates.
-    ///
+    /// This is the external timer input, called every m cycle.
+    pub fn tick_1m(self: *Timer) void {
+        self.tick_1m_count = (self.tick_1m_count +% 1) % 4;
+        if (self.tick_1m_count == 0) self.tick_4m();
+    }
+
+    /// This should be called every 4th m cycle.
     /// This is the fastest frequency that TIMA increments at and 16x the
     /// frequency that DIV has to increment at.
-    pub fn tick_4m(self: *Timer) void {
+    fn tick_4m(self: *Timer) void {
         self.tick_4m_count += 1;
 
         if (self.tick_4m_count % 16 == 0) {
@@ -95,7 +109,7 @@ pub const Timer = struct {
 };
 
 const Io = struct {
-    pub const R = enum { joy, serial_sb, serial_sc, ir_if, audio, not_impl };
+    pub const R = enum { joy, serial_sb, serial_sc, ir_if, audio, other };
 
     pub fn ioreg(a: u16) R {
         return switch (a) {
@@ -104,7 +118,7 @@ const Io = struct {
             0xff02 => R.serial_sc,
             0xff0f => R.ir_if,
             0xff10...0xff26 => R.audio,
-            else => R.not_impl,
+            else => R.other,
         };
     }
 
@@ -134,7 +148,7 @@ const Io = struct {
             R.serial_sb => self.serial.set_sb(value),
             R.serial_sc => self.serial.set_sc(value),
             R.ir_if => self.ir_if = @bitCast(value),
-            R.not_impl, R.audio => {},
+            else => {},
         }
     }
 
@@ -146,7 +160,7 @@ const Io = struct {
             R.serial_sb => self.serial.sb,
             R.serial_sc => self.serial.sc,
             R.ir_if => @bitCast(self.ir_if),
-            R.not_impl, R.audio => 0x00,
+            else => 0x00,
         };
 
         // This is basically what a bus would do. Only one connected device

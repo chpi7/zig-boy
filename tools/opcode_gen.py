@@ -222,6 +222,21 @@ def generate_opcode_to_dispatch(instructions: list[Instruction], fname: str):
 
     return '\n'.join(result)
 
+def generate_get_m_cycles(instructions: list[Instruction], fname: str):
+    result = []
+    result += [f"pub fn {fname}(opcode: u8, idx: u1) u8 {{"]
+    result += ["    return switch(opcode) {"]
+    for i in instructions:
+        c = [int(x/4) for x in i.cycles]
+        if len(c) == 1:
+            c.append(c[0])
+        timings = ", ".join([str(x) for x in c])
+        result += [f"        0x{i.value:02x} => ([2]u8{{ {timings} }})[idx],"]
+    result += ["    };"]
+    result += ["}"]
+
+    return '\n'.join(result)
+
 def generate_dispatch_types(instr: list[Instruction], instr_cb: list[Instruction]):
     ts = [i.dispatch_type() for i in instr]
     ts += [i.dispatch_type() for i in instr_cb]
@@ -264,6 +279,8 @@ def generate(definitions: dict, args: argparse.Namespace):
         f.write(generate_opcode_to_str(prefixed_instructions, "opcode_to_str_cb") + '\n')
         f.write(generate_opcode_to_dispatch(instructions, "opcode_to_dp") + '\n')
         f.write(generate_opcode_to_dispatch(prefixed_instructions, "opcode_to_dp_cb") + '\n')
+        f.write(generate_get_m_cycles(instructions, "get_m_cycles") + '\n')
+        f.write(generate_get_m_cycles(prefixed_instructions, "get_m_cycles_cb") + '\n')
 
 
 def main():
