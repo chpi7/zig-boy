@@ -248,12 +248,36 @@ pub const Bus = struct {
     wram_0: [4096]u8 = [_]u8{0} ** 4096,
     wram_1: [4096]u8 = [_]u8{0} ** 4096, // Non CBG only has one bank here
     hram: [0x80]u8 = [_]u8{0} ** 0x80, // technically only 0x79, from ff80-fffe. Mapper handles that though.
+    oam: [0xa0]u8 = [_]u8{0} ** 160,
+    vram: [0x2000]u8 = [_]u8{0} ** 0x2000,
+    dma_state: u8 = 160, // = next byte to be transfered by DMA. Since it only transfers 160 bytes, 160 means it is done. To start DMA, just set it to 0.
+    dma_base: u16 = 0,
 
-    /// This set the Bus pointer in the various children of the bus.
+    /// This sets the Bus pointer in the various children of the bus.
     ///
     /// Mostly to allow accessing the interrupt request register.
     pub fn link(self: *Bus) void {
         self.io.timer.bus = self;
+        self.io.lcd.bus = self;
+    }
+
+    pub fn init_oam_dma(self: *Bus, base_address: u8) void {
+        self.dma_state = 0;
+        self.dma_base = @as(u16, base_address) << 8 | 0x00;
+    }
+
+    pub fn tick_1m(self: *Bus) void {
+        if (self.dma_state < 160) {
+            std.log.debug("[dma] transfer offset {}", .{self.dma_state});
+
+            const v = self.read(self.dma_base + @as(u16, @intCast(self.dma_state)));
+            self.oam[self.dma_state] = v;
+
+            self.dma_state += 1;
+        }
+
+        self.io.timer.tick_1m();
+        self.io.lcd.tick_1m();
     }
 
     pub fn read(self: *Bus, address: u16) u8 {
@@ -262,12 +286,12 @@ pub const Bus = struct {
         const result: u8 = switch (MemoryMap.region(address)) {
             Region.rom_bank_0 => self.read_cartridge(address),
             Region.rom_bank_n => self.read_cartridge(address),
-            Region.vram => unmapped_result,
+            Region.vram => self.vram[@as(u13, @truncate(address - 0x8000))],
             Region.eram => self.read_cartridge(address),
             Region.wram_0 => self.wram_0[@as(u12, @truncate(address - 0xc000))],
             Region.wram_n => self.wram_1[@as(u12, @truncate(address - 0xd000))],
             Region.echo => unmapped_result, // use prohibited
-            Region.oam => unmapped_result,
+            Region.oam => self.oam[@as(u8, @truncate(address - 0xfe00))],
             Region.unused => unmapped_result, // not used
             Region.io => self.io.read(address),
             Region.hram => self.hram[@as(u7, @truncate(address - 0xff80))],
@@ -287,21 +311,15 @@ pub const Bus = struct {
         switch (region) {
             Region.rom_bank_0 => self.write_cartridge(address, value),
             Region.rom_bank_n => self.write_cartridge(address, value),
-            Region.vram => {},
+            Region.vram => self.vram[@as(u13, @truncate(address - 0x8000))] = value,
             Region.eram => self.write_cartridge(address, value),
-            Region.wram_0 => {
-                self.wram_0[@as(u12, @truncate(address - 0xc000))] = value;
-            },
-            Region.wram_n => {
-                self.wram_1[@as(u12, @truncate(address - 0xd000))] = value;
-            },
+            Region.wram_0 => self.wram_0[@as(u12, @truncate(address - 0xc000))] = value,
+            Region.wram_n => self.wram_1[@as(u12, @truncate(address - 0xd000))] = value,
             Region.echo => {}, // use prohibited
-            Region.oam => {},
+            Region.oam => self.oam[@as(u8, @truncate(address - 0xfe00))] = value,
             Region.unused => {}, // not used
             Region.io => self.io.write(address, value),
-            Region.hram => {
-                self.hram[@as(u7, @truncate(address - 0xff80))] = value;
-            },
+            Region.hram => self.hram[@as(u7, @truncate(address - 0xff80))] = value,
             Region.ie => {
                 self.ir_ie = @bitCast(value);
                 std.log.debug("[bus] set IE = {}", .{self.ir_ie});

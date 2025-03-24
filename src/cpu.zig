@@ -207,7 +207,7 @@ pub const Cpu = struct {
 
     /// This ticks the rest of the system forward 1 m cycle.
     fn tick_sys_1m(self: *Cpu) void {
-        self.bus.io.timer.tick_1m();
+        self.bus.tick_1m();
     }
 
     /// Return {interrupt_handled_flag, interrupt_pending_flag};
