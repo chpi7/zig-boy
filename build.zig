@@ -28,6 +28,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const raylib_dep = b.dependency("raylib_zig", .{
+        .target = target,
+        .optimize = optimize,
+        .shared = true,
+    });
+
+    const raylib = raylib_dep.module("raylib"); // main raylib module
+    const raygui = raylib_dep.module("raygui"); // raygui module
+    const raylib_artifact = raylib_dep.artifact("raylib"); // raylib C library
+
     // We will also create a module for our other entry point, 'main.zig'.
     const exe_mod = b.createModule(.{
         // `root_source_file` is the Zig "entry point" of the module. If a module
@@ -64,6 +74,10 @@ pub fn build(b: *std.Build) void {
         .name = "gb_emulator",
         .root_module = exe_mod,
     });
+
+    exe.linkLibrary(raylib_artifact);
+    exe.root_module.addImport("raylib", raylib);
+    exe.root_module.addImport("raygui", raygui);
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default

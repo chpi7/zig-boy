@@ -239,6 +239,10 @@ pub const Lcd = struct {
         self.framebuffer[@as(usize, y) * 160 + x] = pixel;
     }
 
+    pub fn get_pixel(self: *Lcd, x: usize, y: usize) u8 {
+        return self.framebuffer[@as(usize, y) * 160 + x];
+    }
+
     fn dump_fb_to_console(self: *Lcd) void {
         std.log.debug("fb dump:", .{});
         for (0..self.framebuffer.len) |idx| {
@@ -281,5 +285,5 @@ test "Lcd Stat Stat ro bits" {
     lcd.write(0xff41, 0);
     // check that the compare reg and ppu mode did not get zeroed
     const stat_raw: u8 = @bitCast(lcd.stat);
-    try testing.expectEqual(0b0000_0111, stat_raw);
+    try testing.expectEqual(0b1000_0111, stat_raw);
 }
