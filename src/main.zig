@@ -48,12 +48,12 @@ pub fn main() !void {
     var thread_done = false;
     var gb_thread = try std.Thread.spawn(.{}, gameboy_fun, .{ &cpu, &thread_done });
 
+    // Raylib Initialization
+    //--------------------------------------------------------------------------------------
     const real_screen_width = 160;
     const real_screen_height = 144;
     const screen_size_factor = 5;
 
-    // Initialization
-    //--------------------------------------------------------------------------------------
     const screenWidth = real_screen_width * screen_size_factor;
     const screenHeight = real_screen_height * screen_size_factor;
 

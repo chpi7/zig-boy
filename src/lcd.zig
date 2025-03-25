@@ -102,7 +102,6 @@ pub const Lcd = struct {
                 self.set_ppu_mode(next_mode);
             }, // HBLANK
             1 => if (self.ppu_ly == 153 and self.ppu_dot_line == 456) {
-                self.dump_fb_to_console();
                 self.set_ppu_mode(2);
             }, // VBLANK
             2 => if (self.ppu_dot_line == 80) self.set_ppu_mode(3), // OAM
@@ -189,6 +188,9 @@ pub const Lcd = struct {
     }
 
     fn get_bg_pixel_from_tile(self: *Lcd, tile_idx: u8, x: u8, y: u8) u8 {
+        std.debug.assert(x < 8);
+        std.debug.assert(y < 8);
+
         const tile_data_start = switch (self.lcdc.bg_wn_td_base()) {
             0x8000 => 0x8000 + @as(u16, tile_idx) * 16,
             0x8800 => if (tile_idx > 127)
@@ -202,8 +204,9 @@ pub const Lcd = struct {
         const lsb = self.bus.?.read(line_start);
         const msb = self.bus.?.read(line_start + 1);
         // 8 - x because x is left to right, but bit 7 is left most (so x 0 must be bit 7)
-        const bit: u3 = @truncate(8 - x);
-        const pixel = ((msb >> bit) & 0b10) | ((lsb >> bit) & 0b1);
+        const bit_l = lsb >> @as(u3, @truncate(7 - x));
+        const bit_m = msb >> @as(u3, @truncate(7 - x));
+        const pixel = ((bit_m << 1) & 0b10) | (bit_l & 0b01);
         return pixel;
     }
 
@@ -241,25 +244,6 @@ pub const Lcd = struct {
 
     pub fn get_pixel(self: *Lcd, x: usize, y: usize) u8 {
         return self.framebuffer[@as(usize, y) * 160 + x];
-    }
-
-    fn dump_fb_to_console(self: *Lcd) void {
-        std.log.debug("fb dump:", .{});
-        for (0..self.framebuffer.len) |idx| {
-            if (idx % 160 == 0 and idx > 0) {
-                std.debug.print("\n", .{});
-            }
-
-            const char: []const u8 = switch (self.framebuffer[idx]) {
-                0 => "░",
-                1 => "▒",
-                2 => "▓",
-                3 => "█",
-                else => unreachable,
-            };
-            std.debug.print("{s}", .{char});
-        }
-        std.debug.print("\n", .{});
     }
 };
 
