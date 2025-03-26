@@ -4,6 +4,12 @@ const lcd = @import("lcd.zig");
 
 const Lcd = lcd.Lcd;
 
+pub fn log(comptime format: []const u8, args: anytype) void {
+    if (false) {
+        std.log.debug(format, args);
+    }
+}
+
 /// Interrupt enable / flag register layout
 const Ieif = packed struct {
     vblank: u1 = 0,
@@ -131,7 +137,7 @@ const Io = struct {
 
     pub fn write(self: *Io, address: u16, value: u8) void {
         const r = ioreg(address);
-        std.log.debug("[io]  {} := {}", .{ r, value });
+        log("[io]  {} := {}", .{ r, value });
 
         // start a new approach of less annoying implementation here:
         // just write through to everything and let the receiver discard
@@ -155,7 +161,7 @@ const Io = struct {
 
     pub fn read(self: *Io, address: u16) u8 {
         const r = ioreg(address);
-        // std.log.debug("[io] u8 {} <- {}", .{ r, value });
+        // log("[io] u8 {} <- {}", .{ r, value });
         var result: u8 = switch (r) {
             R.joy => self.joy.read(),
             R.serial_sb => self.serial.sb,
@@ -169,7 +175,7 @@ const Io = struct {
         result |= self.lcd.read(address);
         result |= self.timer.read(address);
 
-        std.log.debug("[io] read {} (={})", .{ r, result });
+        log("[io] read {} (={})", .{ r, result });
         return result;
     }
 };
@@ -189,7 +195,7 @@ const SerialPort = struct {
         if (data == 0x81) {
             // set to 0x81, but immediately clear transfer in flight bit
             self.sc = 0x81 & 0b0111_1111;
-            std.log.debug("[serial] tx requested", .{});
+            log("[serial] tx requested", .{});
             self.dbg_out_buf[self.dbg_out_buf_pos] = SerialPort.replace_printable(self.sb);
             self.dbg_out_buf_pos = (self.dbg_out_buf_pos + 1) % self.dbg_out_buf.len;
             if (self.dbg_out_buf_pos == 0) {
@@ -212,7 +218,7 @@ const SerialPort = struct {
     }
 
     fn print_buf(self: *SerialPort) void {
-        std.log.debug("[serial] {s}", .{self.dbg_out_buf});
+        log("[serial] {s}", .{self.dbg_out_buf});
     }
 };
 
@@ -268,7 +274,7 @@ pub const Bus = struct {
 
     pub fn tick_1m(self: *Bus) void {
         if (self.dma_state < 160) {
-            std.log.debug("[dma] transfer offset {}", .{self.dma_state});
+            log("[dma] transfer offset {}", .{self.dma_state});
 
             const v = self.read(self.dma_base + @as(u16, @intCast(self.dma_state)));
             self.oam[self.dma_state] = v;
@@ -298,7 +304,7 @@ pub const Bus = struct {
             Region.ie => @bitCast(self.ir_ie),
         };
 
-        std.log.debug("[bus] read({x:04}) -> {x:02}", .{ address, result });
+        // log("[bus] read({x:04}) -> {x:02}", .{ address, result });
         return result;
     }
 
@@ -306,7 +312,7 @@ pub const Bus = struct {
         const Region = MemoryMap.Region;
 
         const region = MemoryMap.region(address);
-        std.log.debug("[bus] write({x:04}, {x:02}) ({})", .{ address, value, region });
+        // log("[bus] write({x:04}, {x:02}) ({})", .{ address, value, region });
 
         switch (region) {
             Region.rom_bank_0 => self.write_cartridge(address, value),
@@ -322,7 +328,7 @@ pub const Bus = struct {
             Region.hram => self.hram[@as(u7, @truncate(address - 0xff80))] = value,
             Region.ie => {
                 self.ir_ie = @bitCast(value);
-                std.log.debug("[bus] set IE = {}", .{self.ir_ie});
+                log("[bus] set IE = {}", .{self.ir_ie});
             },
         }
     }

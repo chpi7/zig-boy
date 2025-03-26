@@ -210,8 +210,6 @@ pub const Alu = struct {
         const c = btoi(b > a);
         const h = btoi((b & 0xf) > (a & 0xf)); // apply same logic as for c, just with only 4 bits.
         const res: u8 = a -% b;
-        std.log.debug("{} - {} = {} (h {} c {})", .{ a, b, res, h, c });
-        std.log.debug("{x:02} - {x:02} = {x:02} (h {} c {})", .{ a, b, res, h, c });
         return .{ res, @bitCast(F.T{ .c = c, .h = h, .n = 1, .z = btoi(res == 0) }) };
     }
 

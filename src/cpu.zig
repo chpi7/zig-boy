@@ -13,6 +13,12 @@ const Operand = decoder.Operand;
 const OperandType = decoder.OperandType;
 const RegName = decoder.Register;
 
+pub fn log(comptime format: []const u8, args: anytype) void {
+    if (true) {
+        std.log.debug(format, args);
+    }
+}
+
 const RegFile = struct {
     AF: u16 = 0,
     BC: u16 = 0,
@@ -145,13 +151,13 @@ const RegFile = struct {
 
     fn dump_debug(self: *RegFile) void {
         const f = self.get_flags();
-        std.log.debug("Registers:", .{});
-        std.log.debug(
+        log("Registers:", .{});
+        log(
             "\tAF {x:04}\tHL {x:04}\t (F: z:{} n:{} h:{} c:{})",
             .{ self.AF, self.HL, F.z(f), F.n(f), F.h(f), F.c(f) },
         );
-        std.log.debug("\tBC {x:04}\tSP {x:04}", .{ self.BC, self.SP });
-        std.log.debug("\tDE {x:04}\tPC {x:04}", .{ self.DE, self.PC });
+        log("\tBC {x:04}\tSP {x:04}", .{ self.BC, self.SP });
+        log("\tDE {x:04}\tPC {x:04}", .{ self.DE, self.PC });
     }
 };
 
@@ -235,7 +241,7 @@ pub const Cpu = struct {
             // 1 => 0x48 (stat / lcd)
             // ...
             const target_addr: u16 = 0x40 + @as(u16, idx) * 0x8;
-            std.log.debug("[cpu] handling int request ${x:02}", .{target_addr});
+            log("[cpu] handling int request ${x:02}", .{target_addr});
 
             // this is the isr, it takes 5 m cycles:
             // two m cycles where nothing happens
@@ -252,9 +258,9 @@ pub const Cpu = struct {
         var i, const is_cb = self.decode_next();
 
         if (is_cb) {
-            std.log.debug("[cpu] ---- {} @ {x:04}  {s}", .{ self.instruction_debug_counter, self.rf.PC, decoder.opcode_to_str_cb(i.opcode) });
+            log("[cpu] ---- {} @ {x:04}  {s}", .{ self.instruction_debug_counter, self.rf.PC, decoder.opcode_to_str_cb(i.opcode) });
         } else {
-            std.log.debug("[cpu] ---- {} @ {x:04}  {s}", .{ self.instruction_debug_counter, self.rf.PC, decoder.opcode_to_str(i.opcode) });
+            log("[cpu] ---- {} @ {x:04}  {s}", .{ self.instruction_debug_counter, self.rf.PC, decoder.opcode_to_str(i.opcode) });
         }
 
         const next_two_bytes = [_]u8{
@@ -349,7 +355,7 @@ pub const Cpu = struct {
             m_cycles = decoder.get_m_cycles(i.opcode, m_cycle_idx);
         }
 
-        std.log.debug("[cpu] execute done", .{});
+        log("[cpu] execute done", .{});
         self.instruction_debug_counter +%= 1;
 
         return m_cycles;
@@ -466,7 +472,7 @@ pub const Cpu = struct {
             self.rf.SP +%= 1;
 
             self.rf.PC = m << 8 | l;
-            std.log.debug("[cpu] pc = {x:04}", .{self.rf.PC});
+            log("[cpu] pc = {x:04}", .{self.rf.PC});
 
             taken = true;
         }
@@ -529,7 +535,7 @@ pub const Cpu = struct {
         var taken = true;
         if (!is_cc or self.rf.test_cc(i.operands[0].cc)) {
             self.rf.PC = target;
-            std.log.debug("[cpu] jp {x:04}", .{self.rf.PC});
+            log("[cpu] jp {x:04}", .{self.rf.PC});
             taken = true;
         }
 

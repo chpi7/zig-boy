@@ -2,6 +2,12 @@ const std = @import("std");
 const sys = @import("sys.zig");
 const Bus = sys.Bus;
 
+pub fn log(comptime format: []const u8, args: anytype) void {
+    if (false) {
+        std.log.debug(format, args);
+    }
+}
+
 pub const Lcd = struct {
     const Lcdc = packed struct { // The LCDC LCD Control register
         bg_win_en: u1 = 0,
@@ -45,7 +51,16 @@ pub const Lcd = struct {
     };
 
     const OamEntry = packed struct {
-        flags: u8 = 0,
+        const Flags = packed struct {
+            cbg_only: u3 = 0,
+            bank: u1 = 0,
+            palette: u1 = 0,
+            x_flip: u1 = 0,
+            y_flip: u1 = 0,
+            priority: u1 = 0,
+        };
+
+        flags: OamEntry.Flags = .{},
         tile_idx: u8 = 0,
         x: u8 = 0,
         y: u8 = 0,
@@ -58,6 +73,9 @@ pub const Lcd = struct {
     scx: u8 = 0,
     wx: u8 = 0,
     wy: u8 = 0,
+    bg_palette: u8 = 0,
+    ob0_palette: u8 = 0,
+    ob1_palette: u8 = 0,
     stat: Stat = Stat{},
     bus: ?*Bus = null,
 
@@ -75,10 +93,15 @@ pub const Lcd = struct {
             0xff44 => {}, // ly, read only
             0xff45 => self.lyc = value, // lyc
             0xff46 => self.bus.?.init_oam_dma(value),
+            0xff47 => self.bg_palette = value,
+            0xff48 => self.ob0_palette = value,
+            0xff49 => self.ob1_palette = value,
+            0xff4a => self.wy = value,
+            0xff4b => self.wx = value,
             else => {}, // dont care
         }
         if (0xff40 <= address and address <= 0xff45) {
-            std.log.debug("[lcd] write {x:02}", .{value});
+            log("[lcd] write {x:02}", .{value});
         }
     }
 
@@ -89,10 +112,15 @@ pub const Lcd = struct {
             0xff41 => @bitCast(self.stat),
             0xff44 => self.ly,
             0xff45 => self.lyc,
+            0xff47 => self.bg_palette,
+            0xff48 => self.ob0_palette,
+            0xff49 => self.ob1_palette,
+            0xff4a => self.wy,
+            0xff4b => self.wx,
             else => 0, // dont care, return 0 aka no signal on any line
         };
         if (0xff40 <= address and address <= 0xff45) {
-            std.log.debug("[lcd] read {x:02}", .{result});
+            log("[lcd] read {x:02}", .{result});
         }
         return result;
     }
@@ -161,7 +189,7 @@ pub const Lcd = struct {
 
             oam_scan_idx += 1;
         }
-        // std.log.debug("[ppu] oam scan found {} sprites", .{self.oam_buffer_count});
+        // log("[ppu] oam scan found {} sprites", .{self.oam_buffer_count});
     }
 
     fn read_oam_entry(self: *Lcd, idx: u8) OamEntry {
@@ -170,28 +198,51 @@ pub const Lcd = struct {
             .y = self.bus.?.oam[4 * idx],
             .x = self.bus.?.oam[4 * idx + 1],
             .tile_idx = self.bus.?.oam[4 * idx + 2],
-            .flags = self.bus.?.oam[4 * idx + 3],
+            .flags = @bitCast(self.bus.?.oam[4 * idx + 3]),
         };
     }
 
     fn draw_pixel(self: *Lcd, px: u8, ly: u8) void {
+        var bg_win_pixel: u8 = 0b11;
+
         if (self.lcdc.bg_win_en == 1) {
             // Window is not transparent, it completely overlaps the background.
             const in_window = ly >= self.wy and (px + 7) >= self.wx;
             if (self.lcdc.wi_en == 1 and in_window) {
-                // Draw window
                 const win_x = px + 7 - self.wx; // because px+7 >= wx, this will never underflow
                 const win_y = ly - self.wy;
                 const tile_idx = self.get_win_tile_idx(win_x / 8, win_y / 8);
-                const pixel = self.get_pixel_from_tile(tile_idx, win_x % 8, win_x % 8, false);
-                self.write_framebuffer(px, ly, pixel);
+                bg_win_pixel = self.get_pixel_from_tile(tile_idx, win_x % 8, win_x % 8, false);
             } else {
-                // Draw background
                 const bg_x = (self.scx +% px);
                 const bg_y = (self.scy +% ly);
                 const tile_idx = self.get_bg_tile_idx(bg_x / 8, bg_y / 8);
-                const pixel = self.get_pixel_from_tile(tile_idx, bg_x % 8, bg_y % 8, false);
-                self.write_framebuffer(px, ly, pixel);
+                bg_win_pixel = self.get_pixel_from_tile(tile_idx, bg_x % 8, bg_y % 8, false);
+            }
+        }
+
+        const bg_color: u8 = (self.bg_palette >> (2 * @as(u3, @truncate(bg_win_pixel)))) & 0b11;
+        self.write_framebuffer(px, ly, bg_color);
+
+        if (self.lcdc.ob_en == 1) {
+            // Draw object
+            for (0..self.oam_buffer_count) |idx| {
+                const ox = self.oam_buffer[idx].x;
+                if (ox <= px and (px - ox) < 8) {
+                    const obj_pixel = self.get_obj_pixel(self.oam_buffer[idx], px, ly);
+
+                    const draw_obj = (self.lcdc.bg_win_en == 0) or
+                        (self.oam_buffer[idx].flags.priority == 0) or
+                        bg_win_pixel != 0b00;
+
+                    if (draw_obj and obj_pixel != 0b00) {
+                        const palette = if (self.oam_buffer[idx].flags.palette == 0) self.ob0_palette else self.ob1_palette;
+                        const ob_color: u8 = (palette >> (2 * @as(u3, @truncate(obj_pixel)))) & 0b11;
+                        self.write_framebuffer(px, ly, ob_color);
+                    }
+
+                    break;
+                }
             }
         }
     }
@@ -204,6 +255,33 @@ pub const Lcd = struct {
     fn get_win_tile_idx(self: *Lcd, tile_x: u16, tile_y: u16) u8 {
         const address = self.lcdc.win_tm_base() + (tile_y * 32 + tile_x);
         return self.bus.?.read(address);
+    }
+
+    fn get_obj_pixel(self: *Lcd, obj: OamEntry, px: u8, ly: u8) u8 {
+        std.debug.assert(obj.x <= px and (px - obj.x) < 8);
+        std.debug.assert(obj.y <= ly and (ly - obj.y) < 16);
+
+        var tile_x = px - obj.x;
+        var tile_y = ly - obj.y;
+
+        if (obj.flags.x_flip == 1) tile_x = 8 - tile_x;
+        if (obj.flags.y_flip == 1) {
+            tile_x = if (self.lcdc.ob_sz == 1) (16 - tile_y) else (8 - tile_y);
+        }
+
+        var tile_idx: u8 = 0;
+        if (self.lcdc.ob_sz == 1) {
+            if (tile_y >= 8) {
+                tile_idx = obj.tile_idx | 0x01;
+                tile_y = tile_y % 8;
+            } else {
+                tile_idx = obj.tile_idx & 0xfe;
+            }
+        } else {
+            tile_idx = obj.tile_idx;
+        }
+
+        return self.get_pixel_from_tile(tile_idx, tile_x, tile_y, true);
     }
 
     fn get_pixel_from_tile(self: *Lcd, tile_idx: u8, x: u8, y: u8, comptime is_obj: bool) u8 {
@@ -227,13 +305,13 @@ pub const Lcd = struct {
         // 8 - x because x is left to right, but bit 7 is left most (so x 0 must be bit 7)
         const bit_l = lsb >> @as(u3, @truncate(7 - x));
         const bit_m = msb >> @as(u3, @truncate(7 - x));
-        const pixel = ((bit_m << 1) & 0b10) | (bit_l & 0b01);
-        return pixel;
+        const color_id = ((bit_m << 1) & 0b10) | (bit_l & 0b01);
+        return color_id;
     }
 
     fn set_ppu_mode(self: *Lcd, new_mode: u2) void {
         self.stat.ppu_mode = new_mode;
-        // std.log.debug("[ppu] mode := {}", .{new_mode});
+        // log("[ppu] mode := {}", .{new_mode});
 
         if (new_mode == 0 and self.stat.m0_int_sel == 1) {
             self.bus.?.io.ir_if.lcd = 1;
@@ -254,13 +332,13 @@ pub const Lcd = struct {
         }
     }
 
-    fn write_framebuffer(self: *Lcd, x: u8, y: u8, pixel: u8) void {
+    fn write_framebuffer(self: *Lcd, x: u8, y: u8, color: u8) void {
         std.debug.assert(x < 160);
         std.debug.assert(y < 144);
-        std.debug.assert(pixel <= 0b11);
+        std.debug.assert(color <= 0b11);
 
-        std.log.debug("write fb {} {} = {}", .{ x, y, pixel });
-        self.framebuffer[@as(usize, y) * 160 + x] = pixel;
+        // log("write fb {} {} = {}", .{ x, y, color });
+        self.framebuffer[@as(usize, y) * 160 + x] = color;
     }
 
     pub fn get_pixel(self: *Lcd, x: usize, y: usize) u8 {
