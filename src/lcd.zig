@@ -4,7 +4,7 @@ const Bus = sys.Bus;
 
 pub const Lcd = struct {
     const Lcdc = packed struct { // The LCDC LCD Control register
-        bg_we_pr: u1 = 0,
+        bg_win_en: u1 = 0,
         ob_en: u1 = 0,
         ob_sz: u1 = 0,
         bg_tm: u1 = 0,
@@ -19,6 +19,10 @@ pub const Lcd = struct {
 
         inline fn bg_tm_base(self: *Lcdc) u16 {
             return if (self.bg_tm == 0) 0x9800 else 0x9c00;
+        }
+
+        inline fn win_tm_base(self: *Lcdc) u16 {
+            return if (self.wi_tm == 0) 0x9800 else 0x9c00;
         }
 
         inline fn bg_wn_td_base(self: *Lcdc) u16 {
@@ -42,7 +46,7 @@ pub const Lcd = struct {
 
     const OamEntry = packed struct {
         flags: u8 = 0,
-        tile: u8 = 0,
+        tile_idx: u8 = 0,
         x: u8 = 0,
         y: u8 = 0,
     };
@@ -52,6 +56,8 @@ pub const Lcd = struct {
     lyc: u8 = 0, // LY compare
     scy: u8 = 0,
     scx: u8 = 0,
+    wx: u8 = 0,
+    wy: u8 = 0,
     stat: Stat = Stat{},
     bus: ?*Bus = null,
 
@@ -163,22 +169,30 @@ pub const Lcd = struct {
         return OamEntry{
             .y = self.bus.?.oam[4 * idx],
             .x = self.bus.?.oam[4 * idx + 1],
-            .tile = self.bus.?.oam[4 * idx + 2],
+            .tile_idx = self.bus.?.oam[4 * idx + 2],
             .flags = self.bus.?.oam[4 * idx + 3],
         };
     }
 
     fn draw_pixel(self: *Lcd, px: u8, ly: u8) void {
-        // std.log.debug("[ppu] draw px={} ly={}", .{ px, ly });
-
-        if (self.lcdc.bg_we_pr == 1) {
-            const bg_x = (self.scx +% px);
-            const bg_y = (self.scy +% ly);
-            // load tile index from tile map
-            const tile_idx = self.get_bg_tile_idx(bg_x / 8, bg_y / 8);
-            // load tile data for the current pixel
-            const pixel = self.get_bg_pixel_from_tile(tile_idx, bg_x % 8, bg_y % 8);
-            self.write_framebuffer(px, ly, pixel);
+        if (self.lcdc.bg_win_en == 1) {
+            // Window is not transparent, it completely overlaps the background.
+            const in_window = ly >= self.wy and (px + 7) >= self.wx;
+            if (self.lcdc.wi_en == 1 and in_window) {
+                // Draw window
+                const win_x = px + 7 - self.wx; // because px+7 >= wx, this will never underflow
+                const win_y = ly - self.wy;
+                const tile_idx = self.get_win_tile_idx(win_x / 8, win_y / 8);
+                const pixel = self.get_pixel_from_tile(tile_idx, win_x % 8, win_x % 8, false);
+                self.write_framebuffer(px, ly, pixel);
+            } else {
+                // Draw background
+                const bg_x = (self.scx +% px);
+                const bg_y = (self.scy +% ly);
+                const tile_idx = self.get_bg_tile_idx(bg_x / 8, bg_y / 8);
+                const pixel = self.get_pixel_from_tile(tile_idx, bg_x % 8, bg_y % 8, false);
+                self.write_framebuffer(px, ly, pixel);
+            }
         }
     }
 
@@ -187,14 +201,21 @@ pub const Lcd = struct {
         return self.bus.?.read(address);
     }
 
-    fn get_bg_pixel_from_tile(self: *Lcd, tile_idx: u8, x: u8, y: u8) u8 {
+    fn get_win_tile_idx(self: *Lcd, tile_x: u16, tile_y: u16) u8 {
+        const address = self.lcdc.win_tm_base() + (tile_y * 32 + tile_x);
+        return self.bus.?.read(address);
+    }
+
+    fn get_pixel_from_tile(self: *Lcd, tile_idx: u8, x: u8, y: u8, comptime is_obj: bool) u8 {
         std.debug.assert(x < 8);
         std.debug.assert(y < 8);
 
-        const tile_data_start = switch (self.lcdc.bg_wn_td_base()) {
+        const addr_mode = if (is_obj) 0x8000 else self.lcdc.bg_wn_td_base();
+
+        const tile_data_start = switch (addr_mode) {
             0x8000 => 0x8000 + @as(u16, tile_idx) * 16,
             0x8800 => if (tile_idx > 127)
-                0x8800 + @as(u16, tile_idx - 127) * 16
+                0x8800 + @as(u16, tile_idx - 128) * 16
             else
                 0x9000 + @as(u16, tile_idx) * 16,
             else => unreachable,
@@ -251,9 +272,9 @@ const testing = std.testing;
 
 test "Lcd Lcdc flag order" {
     var r = Lcd.Lcdc{};
-    try testing.expectEqual(0, r.bg_we_pr);
+    try testing.expectEqual(0, r.bg_win_en);
     r = @bitCast(@as(u8, 0b0000_0001));
-    try testing.expectEqual(1, r.bg_we_pr);
+    try testing.expectEqual(1, r.bg_win_en);
 }
 
 test "Lcd Stat flag order" {
