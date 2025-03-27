@@ -9,7 +9,6 @@ const Cartridge = lib.cartridge.Cartridge;
 const decoder = lib.cpu.decoder;
 
 fn gameboy_fun(cpu: *Cpu, done: *bool) !void {
-    cpu.rf.PC = 0x0100;
     while (true) {
         const pc = cpu.rf.PC;
         cpu.step();
@@ -26,6 +25,10 @@ fn gameboy_fun(cpu: *Cpu, done: *bool) !void {
     done.* = true;
 }
 
+inline fn btoi(b: bool) u1 {
+    return @intFromBool(b);
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -36,7 +39,8 @@ pub fn main() !void {
     var cartridge = if (args.next()) |first_arg| tmp: {
         break :tmp try Cartridge.load(first_arg, allocator);
     } else tmp: {
-        break :tmp try Cartridge.load("./external/gb-test-roms/cpu_instrs/individual/08-misc instrs.gb", allocator);
+        break :tmp try Cartridge.load("./external/tetris_world_reva.gb", allocator);
+        // break :tmp try Cartridge.load("./external/gb-test-roms/cpu_instrs/individual/08-misc instrs.gb", allocator);
     };
     defer cartridge.deinit();
 
@@ -44,9 +48,10 @@ pub fn main() !void {
     var cpu = Cpu{ .bus = &bus };
     bus.cartridge = &cartridge;
     bus.link();
+    cpu.rf.PC = 0x0100;
 
-    var thread_done = false;
-    var gb_thread = try std.Thread.spawn(.{}, gameboy_fun, .{ &cpu, &thread_done });
+    // var thread_done = false;
+    // var gb_thread = try std.Thread.spawn(.{}, gameboy_fun, .{ &cpu, &thread_done });
 
     // Raylib Initialization
     //--------------------------------------------------------------------------------------
@@ -64,10 +69,31 @@ pub fn main() !void {
     fb_img.setFormat(.uncompressed_r8g8b8);
     const fb_tex = try rl.loadTextureFromImage(fb_img);
 
-    rl.setTargetFPS(60); // Set our game to run at 60 frames-per-second
+    rl.setTargetFPS(60);
+    // const cycles_per_frame = 17476; // = 1048576 / 60;
+    const cycles_per_frame = 500; // = 1048576 / 60;
 
-    // Main game loop
-    while (!rl.windowShouldClose()) { // Detect window close button or ESC key
+    while (!rl.windowShouldClose()) {
+        // 1) set inputs
+        // const up = rl.isKeyPressed(.w);
+        // const down = rl.isKeyPressed(.s);
+        // const left = rl.isKeyPressed(.a);
+        // const right = rl.isKeyPressed(.d);
+        // const sel = rl.isKeyPressed(.n);
+        // const start = rl.isKeyPressed(.m);
+        // const a = rl.isKeyPressed(.j);
+        // const b = rl.isKeyPressed(.k);
+
+        // bus.io.joy.host_set_dpad_state(btoi(up), btoi(down), btoi(left), btoi(right));
+        // bus.io.joy.host_set_btn_state(btoi(start), btoi(sel), btoi(b), btoi(a));
+
+        // 2) process some instructions
+        var cycles: usize = 0;
+        while (cycles < cycles_per_frame) {
+            cycles += cpu.step();
+        }
+
+        // 3) render frame to host
         rl.beginDrawing();
         defer rl.endDrawing();
 
@@ -84,10 +110,7 @@ pub fn main() !void {
         rl.updateTexture(fb_tex, fb_img.data);
         rl.drawTexture(fb_tex, 0, 0, rl.Color.white);
         rl.drawFPS(0, 0);
-
-        // rl.drawText("Congrats! You created your first window!", 190, 200, 20, .light_gray);
-        //----------------------------------------------------------------------------------
     }
 
-    gb_thread.join();
+    // gb_thread.join();
 }

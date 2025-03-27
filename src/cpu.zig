@@ -172,7 +172,7 @@ pub const Cpu = struct {
 
     /// Execute one instruction or handle an interrupt.
     /// This ticks the rest of the system the correct number of cycles too.
-    pub fn step(self: *Cpu) void {
+    pub fn step(self: *Cpu) u8 {
         var m_cycles_passed: u8 = 0;
         const int_handled, const int_pending = self.handle_ir();
 
@@ -194,6 +194,8 @@ pub const Cpu = struct {
         for (0..m_cycles_passed) |_| {
             self.tick_sys_1m();
         }
+
+        return m_cycles_passed;
     }
 
     fn decode_next(self: *Cpu) struct { Instruction, bool } {
