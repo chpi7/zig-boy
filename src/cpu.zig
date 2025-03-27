@@ -534,7 +534,7 @@ pub const Cpu = struct {
             target = self.rf.HL;
         }
 
-        var taken = true;
+        var taken = false;
         if (!is_cc or self.rf.test_cc(i.operands[0].cc)) {
             self.rf.PC = target;
             log("[cpu] jp {x:04}", .{self.rf.PC});
