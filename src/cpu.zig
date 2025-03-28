@@ -163,6 +163,8 @@ pub const Cpu = struct {
     rf: RegFile = .{},
     /// global interrupt enable
     ime: u1 = 0,
+    /// Effect of ei is delayed by one instruction.
+    ime_enable_queued: u1 = 0,
     bus: *Bus,
     halted: bool = false,
     cc_status: u2 = 0, // 0: no cc, 1: cc + not taken, 2: cc + taken     This way cc_status % 2 can be used as the decoder index.
@@ -171,29 +173,49 @@ pub const Cpu = struct {
     /// Execute one instruction or handle an interrupt.
     /// This ticks the rest of the system the correct number of cycles too.
     pub fn step(self: *Cpu) u8 {
-        var m_cycles_passed: u8 = 0;
-        const int_handled, const int_pending = self.handle_ir();
-
-        if (int_pending) {
-            // handle_ir already handled the interrupt or not depending on IME.
-            // So we can unhalt here as long as anything was pending.
-            self.halted = false;
+        if (self.ime_enable_queued == 1) {
+            self.ime = 1;
+            self.ime_enable_queued = 0;
+            std.log.debug("IME = 1", .{});
         }
 
-        if (int_handled) {
-            m_cycles_passed = 5;
-        } else if (!self.halted) {
-            m_cycles_passed = self.execute_instruction();
-        } else {
-            // if we are halted we still need to tick the timers
-            m_cycles_passed = 1;
+        var cycles_passed: u8 = 0;
+        if (!self.halted) {
+            cycles_passed += self.execute_instruction();
+            for (0..cycles_passed) |_| {
+                self.tick_sys_1m();
+            }
         }
 
-        for (0..m_cycles_passed) |_| {
-            self.tick_sys_1m();
+        if (self.ime == 1) {
+            for (0..5) |idx| {
+                const check_mask: u8 = @as(u8, 1) << @truncate(idx);
+                var request_mask: u8 = @bitCast(self.bus.io.ir_if);
+                const requested = (check_mask & request_mask) != 0;
+                const enabled = (check_mask & @as(u8, @bitCast(self.bus.ir_ie))) != 0;
+                if (requested and enabled) {
+                    request_mask &= ~check_mask;
+                    self.bus.io.ir_if = @bitCast(request_mask);
+
+                    self.ime = 0;
+                    const addr: u16 = 0x40 + @as(u8, @truncate(idx)) * 0x08;
+                    std.log.debug("[cpu] handling int request ${x:02}", .{addr});
+
+                    self.tick_sys_1m();
+                    self.tick_sys_1m();
+                    self.tick_sys_1m();
+                    self.tick_sys_1m();
+
+                    self.call(addr);
+
+                    self.tick_sys_1m();
+                    cycles_passed += 5;
+                    break;
+                }
+            }
         }
 
-        return m_cycles_passed;
+        return cycles_passed;
     }
 
     fn decode_next(self: *Cpu) struct { Instruction, bool } {
@@ -214,44 +236,6 @@ pub const Cpu = struct {
     /// This ticks the rest of the system forward 1 m cycle.
     fn tick_sys_1m(self: *Cpu) void {
         self.bus.tick_1m();
-    }
-
-    /// Return {interrupt_handled_flag, interrupt_pending_flag};
-    ///
-    /// (handled implies pending)
-    fn handle_ir(self: *Cpu) struct { bool, bool } {
-        const ie: u8 = @bitCast(self.bus.ir_ie);
-        const ir: u8 = @bitCast(self.bus.io.ir_if);
-        const pending = (ie & ir) != 0;
-        if (self.ime == 1 and pending) {
-            // bit 0 / vblank has the highest priority, bit 4 the lowest.
-            // at least one bit is set, idx can be at most 7.
-            const idx: u3 = @truncate(@ctz(ie & ir));
-            const mask: u8 = @as(u8, 1) << idx;
-            std.debug.assert(idx < 5);
-
-            // Clear the correct bit in the int request mask.
-            self.bus.io.ir_if = @bitCast(ir & ~mask);
-            // Disable interrupts while the current one is getting handled.
-            self.ime = 0;
-
-            // !!! This relies on the fact that in Ieif, the order of interrupts
-            // matches their addesses.
-            // 0 => 0x40 (vblank)
-            // 1 => 0x48 (stat / lcd)
-            // ...
-            const target_addr: u16 = 0x40 + @as(u16, idx) * 0x8;
-            std.log.debug("[cpu] handling int request ${x:02}", .{target_addr});
-
-            // this is the isr, it takes 5 m cycles:
-            // two m cycles where nothing happens
-            // push pc (two more m cycles)
-            // pc = $handler
-            self.call(target_addr);
-
-            return .{ true, true };
-        }
-        return .{ false, pending };
     }
 
     fn execute_instruction(self: *Cpu) u8 {
@@ -293,8 +277,15 @@ pub const Cpu = struct {
             Dt.daa_u8 => self.op_alu_op_u8(i, Alu.daa),
             Dt.dec_u16 => self.op_alu_op_u16(i, Alu.dec16),
             Dt.dec_u8 => self.op_alu_op_u8(i, Alu.dec8),
-            Dt.di => self.ime = 0,
-            Dt.ei => self.ime = 1,
+            Dt.di => {
+                self.ime = 0;
+                std.log.debug("IME = 0", .{});
+            },
+            Dt.ei => {
+                // self.ime = 1;
+                self.ime_enable_queued = 1;
+                std.log.debug("IME enabled queued", .{});
+            },
             Dt.halt => self.op_halt(),
             Dt.illegal => unreachable,
             Dt.inc_u16 => self.op_alu_op_u16(i, Alu.inc16),
