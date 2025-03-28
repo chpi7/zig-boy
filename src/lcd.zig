@@ -3,7 +3,7 @@ const sys = @import("sys.zig");
 const Bus = sys.Bus;
 
 pub fn log(comptime format: []const u8, args: anytype) void {
-    if (false) {
+    if (true) {
         std.log.debug(format, args);
     }
 }
@@ -42,7 +42,7 @@ pub const Lcd = struct {
         m1_int_sel: u1 = 0,
         m2_int_sel: u1 = 0,
         lyc_int_sel: u1 = 0,
-        _padding: u1 = 1,
+        _padding: u1 = 0,
 
         fn write(self: *Stat, value: u8) void {
             const write_mask: u8 = 0b0111_1000;
@@ -86,10 +86,36 @@ pub const Lcd = struct {
     oam_buffer_count: usize = 0,
     framebuffer: [23040]u8 = [_]u8{0} ** 23040, // row major 160 * 144 screen
 
+    fn address_to_name(address: u16) []const u8 {
+        return switch (address) {
+            0xff40 => "lcdc",
+            0xff41 => "stat",
+            0xff42 => "scy",
+            0xff43 => "scx",
+            0xff44 => "ly",
+            0xff45 => "lyc",
+            0xff46 => "bus",
+            0xff47 => "bgp",
+            0xff48 => "ob0p",
+            0xff49 => "ob1p",
+            0xff4a => "wy",
+            0xff4b => "wx",
+            else => "UNKNOWN",
+        };
+    }
+
     pub fn write(self: *Lcd, address: u16, value: u8) void {
         switch (address) {
-            0xff40 => self.lcdc = @bitCast(value), // lcdc
-            0xff41 => self.stat.write(value),
+            0xff40 => {
+                self.lcdc = @bitCast(value);
+                log("{}", .{self.lcdc});
+            },
+            0xff41 => {
+                self.stat.write(value);
+                log("{}", .{self.stat});
+            },
+            0xff42 => self.scy = value,
+            0xff43 => self.scx = value,
             0xff44 => {}, // ly, read only
             0xff45 => self.lyc = value, // lyc
             0xff46 => self.bus.?.init_oam_dma(value),
@@ -101,7 +127,7 @@ pub const Lcd = struct {
             else => {}, // dont care
         }
         if (0xff40 <= address and address <= 0xff45) {
-            log("[lcd] write {x:02}", .{value});
+            log("[lcd] write {s} := {x:02}", .{ Lcd.address_to_name(address), value });
         }
     }
 
@@ -109,7 +135,9 @@ pub const Lcd = struct {
         std.debug.assert(0 <= self.ly and self.ly <= 153);
         const result: u8 = switch (address) {
             0xff40 => @bitCast(self.lcdc),
-            0xff41 => @bitCast(self.stat),
+            0xff41 => @as(u8, @bitCast(self.stat)) & 0b0111_1111,
+            0xff42 => self.scy,
+            0xff43 => self.scx,
             0xff44 => self.ly,
             0xff45 => self.lyc,
             0xff47 => self.bg_palette,
@@ -120,7 +148,7 @@ pub const Lcd = struct {
             else => 0, // dont care, return 0 aka no signal on any line
         };
         if (0xff40 <= address and address <= 0xff45) {
-            log("[lcd] read {x:02}", .{result});
+            // log("[lcd] read {s} -> {x:02}", .{ Lcd.address_to_name(address), result });
         }
         return result;
     }
@@ -129,6 +157,14 @@ pub const Lcd = struct {
     ///
     /// One frame takes 70224 dots, with 1 m cycle == 4 dots.
     pub fn tick_1m(self: *Lcd) void {
+        // Return if we are disabled
+        if (self.lcdc.en == 0) {
+            @memset(&self.framebuffer, 0);
+            // log("[lcd] skip tick (disabled)", .{});
+            return;
+        }
+        // log("[lcd] tick begin", .{});
+
         // Update PPU mode before doing something.
         switch (self.stat.ppu_mode) {
             0 => if (self.ppu_dot_line == 456) {
@@ -169,6 +205,8 @@ pub const Lcd = struct {
         }
 
         self.ppu_dot_line += 4;
+
+        // log("[lcd] tick end", .{});
     }
 
     fn oam_scan(self: *Lcd) void {
@@ -224,7 +262,7 @@ pub const Lcd = struct {
         const bg_color: u8 = (self.bg_palette >> (2 * @as(u3, @truncate(bg_win_pixel)))) & 0b11;
         self.write_framebuffer(px, ly, bg_color);
 
-        if (self.lcdc.ob_en == 1) {
+        if (self.lcdc.ob_en == 1 and false) {
             // Draw object
             for (0..self.oam_buffer_count) |idx| {
                 const ox = self.oam_buffer[idx].x;
@@ -320,6 +358,14 @@ pub const Lcd = struct {
         } else if (new_mode == 2 and self.stat.m2_int_sel == 1) {
             self.bus.?.io.ir_if.lcd = 1;
         }
+
+        if (new_mode == 1) {
+            std.log.debug("VBLANK", .{});
+            if (self.bus) |b| {
+                std.log.debug("request vblank int", .{});
+                b.io.ir_if.vblank = 1;
+            }
+        }
     }
 
     fn set_stat_ly(self: *Lcd, ly: u8) void {
@@ -328,6 +374,7 @@ pub const Lcd = struct {
         self.stat.lyc_eq = @intFromBool(lyc_eq);
 
         if (self.stat.lyc_int_sel == 1) {
+            log("[lcd] request stat intr", .{});
             self.bus.?.io.ir_if.lcd = 1;
         }
     }

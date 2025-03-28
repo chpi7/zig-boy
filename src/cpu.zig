@@ -14,7 +14,7 @@ const OperandType = decoder.OperandType;
 const RegName = decoder.Register;
 
 pub fn log(comptime format: []const u8, args: anytype) void {
-    if (true) {
+    if (false) {
         std.log.debug(format, args);
     }
 }
@@ -150,12 +150,10 @@ const RegFile = struct {
     }
 
     fn dump_debug(self: *RegFile) void {
+        // _ = self.*;
         const f = self.get_flags();
         log("Registers:", .{});
-        log(
-            "\tAF {x:04}\tHL {x:04}\t (F: z:{} n:{} h:{} c:{})",
-            .{ self.AF, self.HL, F.z(f), F.n(f), F.h(f), F.c(f) },
-        );
+        log("\tAF {x:04}\tHL {x:04}\t (F: z:{} n:{} h:{} c:{})", .{ self.AF, self.HL, F.z(f), F.n(f), F.h(f), F.c(f) });
         log("\tBC {x:04}\tSP {x:04}", .{ self.BC, self.SP });
         log("\tDE {x:04}\tPC {x:04}", .{ self.DE, self.PC });
     }
@@ -243,7 +241,7 @@ pub const Cpu = struct {
             // 1 => 0x48 (stat / lcd)
             // ...
             const target_addr: u16 = 0x40 + @as(u16, idx) * 0x8;
-            log("[cpu] handling int request ${x:02}", .{target_addr});
+            std.log.debug("[cpu] handling int request ${x:02}", .{target_addr});
 
             // this is the isr, it takes 5 m cycles:
             // two m cycles where nothing happens
@@ -321,6 +319,7 @@ pub const Cpu = struct {
             Dt.reti => {
                 self.ime = 1;
                 self.op_ret(i);
+                log("RETI done", .{});
             },
             Dt.rl_u8 => self.op_alu_op_u8_pref(i, Alu.rl8),
             Dt.rla_u8 => self.op_alu_op_u8(i, Alu.rl8),

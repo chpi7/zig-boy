@@ -32,14 +32,41 @@ const JoypP1 = packed struct {
     butt: u1 = 0,
     _padding: u2 = 0,
 
+    host_btn: u4 = 0b1111,
+    host_dpad: u4 = 0b1111,
+
     fn write(self: *JoypP1, value: u8) void {
-        const write_mask: u8 = 0b1111_0000;
-        self.* = @bitCast(@as(u8, @bitCast(self.*)) & ~write_mask | (write_mask & value));
+        self.dpad = @truncate(value >> 4);
+        self.butt = @truncate(value >> 5);
     }
 
     fn read(self: *JoypP1) u8 {
-        // TODO actually hook up input here at some point
-        return @bitCast(self.*);
+        var keys: u4 = 0xf;
+        if (self.dpad == 1) {
+            keys = self.host_dpad;
+        }
+        if (self.butt == 1) {
+            keys = self.host_btn;
+        }
+
+        const settings = @as(u8, self.dpad) << 4 | @as(u8, self.butt) << 5;
+        return settings | keys;
+    }
+
+    pub fn host_set_dpad_state(self: *JoypP1, u: u1, d: u1, l: u1, r: u1) void {
+        self.host_dpad =
+            ~(@as(u4, d) << 3 |
+                @as(u4, u) << 2 |
+                @as(u4, l) << 1 |
+                @as(u4, r) << 0);
+    }
+
+    pub fn host_set_btn_state(self: *JoypP1, start: u1, sel: u1, b: u1, a: u1) void {
+        self.host_btn =
+            ~(@as(u4, start) << 3 |
+                @as(u4, sel) << 2 |
+                @as(u4, b) << 1 |
+                @as(u4, a) << 0);
     }
 };
 
@@ -137,7 +164,9 @@ const Io = struct {
 
     pub fn write(self: *Io, address: u16, value: u8) void {
         const r = ioreg(address);
-        log("[io]  {} := {}", .{ r, value });
+        if (r != R.other and r != R.audio) {
+            log("[io]  {} := {} (0x{x})", .{ r, value, value });
+        }
 
         // start a new approach of less annoying implementation here:
         // just write through to everything and let the receiver discard
@@ -154,7 +183,10 @@ const Io = struct {
             R.joy => self.joy.write(value),
             R.serial_sb => self.serial.set_sb(value),
             R.serial_sc => self.serial.set_sc(value),
-            R.ir_if => self.ir_if = @bitCast(value),
+            R.ir_if => {
+                self.ir_if = @bitCast(value);
+                log("[io] ir_if = {}", .{self.ir_if});
+            },
             else => {},
         }
     }
@@ -175,7 +207,9 @@ const Io = struct {
         result |= self.lcd.read(address);
         result |= self.timer.read(address);
 
-        log("[io] read {} (={})", .{ r, result });
+        if (true) {
+            log("[io] read {} (={} (0x{x}))", .{ r, result, result });
+        }
         return result;
     }
 };
@@ -273,8 +307,14 @@ pub const Bus = struct {
     }
 
     pub fn tick_1m(self: *Bus) void {
+        if (self.dma_state == 0) {
+            log("[dma] start from 0x{x}", .{self.dma_base});
+        } else if (self.dma_state == 159) {
+            log("[dma] done", .{});
+        }
+
         if (self.dma_state < 160) {
-            log("[dma] transfer offset {}", .{self.dma_state});
+            // log("[dma] transfer offset {}", .{self.dma_state});
 
             const v = self.read(self.dma_base + @as(u16, @intCast(self.dma_state)));
             self.oam[self.dma_state] = v;
@@ -304,7 +344,7 @@ pub const Bus = struct {
             Region.ie => @bitCast(self.ir_ie),
         };
 
-        // log("[bus] read({x:04}) -> {x:02}", .{ address, result });
+        log("[bus] read({x:04}) -> {x:02}", .{ address, result });
         return result;
     }
 
@@ -312,7 +352,7 @@ pub const Bus = struct {
         const Region = MemoryMap.Region;
 
         const region = MemoryMap.region(address);
-        // log("[bus] write({x:04}, {x:02}) ({})", .{ address, value, region });
+        log("[bus] write({x:04}, {x:02}) ({})", .{ address, value, region });
 
         switch (region) {
             Region.rom_bank_0 => self.write_cartridge(address, value),

@@ -8,23 +8,6 @@ const Bus = lib.sys.Bus;
 const Cartridge = lib.cartridge.Cartridge;
 const decoder = lib.cpu.decoder;
 
-fn gameboy_fun(cpu: *Cpu, done: *bool) !void {
-    while (true) {
-        const pc = cpu.rf.PC;
-        cpu.step();
-        if (cpu.rf.PC == pc and !cpu.halted) {
-            std.log.debug("stop, pc not changed and not halted", .{});
-            // assume infinite loop at the end
-            break;
-        }
-    }
-
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("Terminated instruction counter = {}!\n", .{cpu.instruction_debug_counter});
-
-    done.* = true;
-}
-
 inline fn btoi(b: bool) u1 {
     return @intFromBool(b);
 }
@@ -48,6 +31,7 @@ pub fn main() !void {
     var cpu = Cpu{ .bus = &bus };
     bus.cartridge = &cartridge;
     bus.link();
+    cpu.rf.AF = 0x0; // A = $11 indicates CGB.
     cpu.rf.PC = 0x0100;
 
     // var thread_done = false;
@@ -70,22 +54,22 @@ pub fn main() !void {
     const fb_tex = try rl.loadTextureFromImage(fb_img);
 
     rl.setTargetFPS(60);
-    // const cycles_per_frame = 17476; // = 1048576 / 60;
-    const cycles_per_frame = 500; // = 1048576 / 60;
+    const cycles_per_frame = 17476; // = 1048576 / 60;
+    // const cycles_per_frame = 500; // = 1048576 / 60;
 
     while (!rl.windowShouldClose()) {
         // 1) set inputs
-        // const up = rl.isKeyPressed(.w);
-        // const down = rl.isKeyPressed(.s);
-        // const left = rl.isKeyPressed(.a);
-        // const right = rl.isKeyPressed(.d);
-        // const sel = rl.isKeyPressed(.n);
-        // const start = rl.isKeyPressed(.m);
-        // const a = rl.isKeyPressed(.j);
-        // const b = rl.isKeyPressed(.k);
+        const up = rl.isKeyDown(.w);
+        const down = rl.isKeyDown(.s);
+        const left = rl.isKeyDown(.a);
+        const right = rl.isKeyDown(.d);
+        const sel = rl.isKeyDown(.n);
+        const start = rl.isKeyDown(.m);
+        const a = rl.isKeyDown(.j);
+        const b = rl.isKeyDown(.k);
 
-        // bus.io.joy.host_set_dpad_state(btoi(up), btoi(down), btoi(left), btoi(right));
-        // bus.io.joy.host_set_btn_state(btoi(start), btoi(sel), btoi(b), btoi(a));
+        bus.io.joy.host_set_dpad_state(btoi(up), btoi(down), btoi(left), btoi(right));
+        bus.io.joy.host_set_btn_state(btoi(start), btoi(sel), btoi(b), btoi(a));
 
         // 2) process some instructions
         var cycles: usize = 0;
