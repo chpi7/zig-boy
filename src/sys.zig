@@ -42,10 +42,10 @@ const JoypP1 = packed struct {
 
     fn read(self: *JoypP1) u8 {
         var keys: u4 = 0xf;
-        if (self.dpad == 1) {
+        if (self.dpad == 0) {
             keys = self.host_dpad;
         }
-        if (self.butt == 1) {
+        if (self.butt == 0) {
             keys = self.host_btn;
         }
 
