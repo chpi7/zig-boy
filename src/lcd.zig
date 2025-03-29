@@ -126,7 +126,7 @@ pub const Lcd = struct {
             else => {}, // dont care
         }
         if (0xff40 <= address and address <= 0xff45) {
-            log("[lcd] write {s} := {x:02}", .{ Lcd.address_to_name(address), value });
+            // log("[lcd] write {s} := {x:02}", .{ Lcd.address_to_name(address), value });
         }
     }
 
@@ -228,13 +228,6 @@ pub const Lcd = struct {
                 }
             }
             oam_scan_idx += 1;
-        }
-    }
-
-    pub fn debug_dump_oam_entries(self: *Lcd) void {
-        for (0..40) |idx| {
-            const oam_entry = self.read_oam_entry(@truncate(idx));
-            std.log.debug("oam entry {}: {}", .{ idx, oam_entry });
         }
     }
 
@@ -373,9 +366,7 @@ pub const Lcd = struct {
         }
 
         if (new_mode == 1) {
-            std.log.debug("VBLANK", .{});
             if (self.bus) |b| {
-                std.log.debug("request vblank int", .{});
                 b.io.ir_if.vblank = 1;
             }
         }

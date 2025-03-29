@@ -199,7 +199,7 @@ pub const Cpu = struct {
 
                     self.ime = 0;
                     const addr: u16 = 0x40 + @as(u8, @truncate(idx)) * 0x08;
-                    std.log.debug("[cpu] handling int request ${x:02}", .{addr});
+                    log("[cpu] handling int request ${x:02}", .{addr});
 
                     self.tick_sys_1m();
                     self.tick_sys_1m();
