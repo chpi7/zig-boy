@@ -20,7 +20,7 @@ pub const Lcd = struct {
         en: u1 = 0,
 
         inline fn sprite_height(self: *Lcdc) u8 {
-            return @as(u8, 8) << self.ob_sz;
+            return if (self.ob_sz == 0) 8 else 16;
         }
 
         inline fn bg_tm_base(self: *Lcdc) u16 {
@@ -80,7 +80,6 @@ pub const Lcd = struct {
     bus: ?*Bus = null,
 
     // PPU stuff:
-    ppu_ly: u8 = 0,
     ppu_dot_line: u16 = 0,
     oam_buffer: [10]OamEntry = [_]OamEntry{OamEntry{}} ** 10,
     oam_buffer_count: usize = 0,
@@ -168,10 +167,10 @@ pub const Lcd = struct {
         // Update PPU mode before doing something.
         switch (self.stat.ppu_mode) {
             0 => if (self.ppu_dot_line == 456) {
-                const next_mode: u2 = if (self.ppu_ly == 143) 1 else 2;
+                const next_mode: u2 = if (self.ly == 143) 1 else 2;
                 self.set_ppu_mode(next_mode);
             }, // HBLANK
-            1 => if (self.ppu_ly == 153 and self.ppu_dot_line == 456) {
+            1 => if (self.ly == 153 and self.ppu_dot_line == 456) {
                 self.set_ppu_mode(2);
             }, // VBLANK
             2 => if (self.ppu_dot_line == 80) self.set_ppu_mode(3), // OAM
@@ -184,11 +183,11 @@ pub const Lcd = struct {
 
         if (self.ppu_dot_line == 456) {
             self.ppu_dot_line = 0;
-            self.ppu_ly = (self.ppu_ly + 1) % 154;
+            self.ly = (self.ly + 1) % 154;
         }
 
-        std.debug.assert(self.ppu_ly <= 153);
-        self.set_stat_ly(@truncate(self.ppu_ly));
+        std.debug.assert(self.ly <= 153);
+        self.update_stat_ly(@truncate(self.ly));
 
         switch (self.stat.ppu_mode) {
             0, 1 => {}, // H/V BLANK
@@ -199,7 +198,7 @@ pub const Lcd = struct {
                 const pixel_x = self.ppu_dot_line - 80;
                 std.debug.assert(pixel_x < 160);
                 for (0..4) |i| {
-                    self.draw_pixel(@truncate(pixel_x + i), @truncate(self.ppu_ly));
+                    self.draw_pixel(@truncate(pixel_x + i), @truncate(self.ly));
                 }
             },
         }
@@ -216,18 +215,27 @@ pub const Lcd = struct {
 
         while (self.oam_buffer_count < 10 and oam_scan_idx < 40) {
             const candidate = self.read_oam_entry(oam_scan_idx);
-            const okay = (candidate.x > 0) and
-                (self.ly + 16 >= candidate.y) and
-                (self.ly + 16 < candidate.y + sprite_height);
+            const certainly_hidden = candidate.y >= 160 or candidate.y == 0;
 
-            if (okay) {
-                self.oam_buffer[self.oam_buffer_count] = candidate;
-                self.oam_buffer_count += 1;
+            if (!certainly_hidden) {
+                const okay =
+                    (candidate.y <= (self.ly + 16)) and
+                    ((self.ly + 16) < (candidate.y + sprite_height));
+
+                if (okay) {
+                    self.oam_buffer[self.oam_buffer_count] = candidate;
+                    self.oam_buffer_count += 1;
+                }
             }
-
             oam_scan_idx += 1;
         }
-        // log("[ppu] oam scan found {} sprites", .{self.oam_buffer_count});
+    }
+
+    pub fn debug_dump_oam_entries(self: *Lcd) void {
+        for (0..40) |idx| {
+            const oam_entry = self.read_oam_entry(@truncate(idx));
+            std.log.debug("oam entry {}: {}", .{ idx, oam_entry });
+        }
     }
 
     fn read_oam_entry(self: *Lcd, idx: u8) OamEntry {
@@ -260,29 +268,32 @@ pub const Lcd = struct {
         }
 
         const bg_color: u8 = (self.bg_palette >> (2 * @as(u3, @truncate(bg_win_pixel)))) & 0b11;
-        self.write_framebuffer(px, ly, bg_color);
+        var blended_color: u8 = bg_color;
 
-        if (self.lcdc.ob_en == 1 and false) {
+        if (self.lcdc.ob_en == 1) {
             // Draw object
             for (0..self.oam_buffer_count) |idx| {
                 const ox = self.oam_buffer[idx].x;
-                if (ox <= px and (px - ox) < 8) {
-                    const obj_pixel = self.get_obj_pixel(self.oam_buffer[idx], px, ly);
+                if (ox <= (px + 8) and ((px + 8) - ox) < 8) {
+                    const obj_pixel = self.get_obj_pixel(self.oam_buffer[idx], px + 8, ly + 16);
+                    const palette = if (self.oam_buffer[idx].flags.palette == 0) self.ob0_palette else self.ob1_palette;
+                    const ob_color: u8 = (palette >> (2 * @as(u3, @truncate(obj_pixel)))) & 0b11;
 
-                    const draw_obj = (self.lcdc.bg_win_en == 0) or
-                        (self.oam_buffer[idx].flags.priority == 0) or
-                        bg_win_pixel != 0b00;
+                    const draw_obj =
+                        bg_win_pixel == 0b00 or
+                        (self.lcdc.bg_win_en == 0) or
+                        (self.oam_buffer[idx].flags.priority == 0);
 
-                    if (draw_obj and obj_pixel != 0b00) {
-                        const palette = if (self.oam_buffer[idx].flags.palette == 0) self.ob0_palette else self.ob1_palette;
-                        const ob_color: u8 = (palette >> (2 * @as(u3, @truncate(obj_pixel)))) & 0b11;
-                        self.write_framebuffer(px, ly, ob_color);
+                    if (draw_obj) {
+                        blended_color = ob_color;
                     }
 
                     break;
                 }
             }
         }
+
+        self.write_framebuffer(px, ly, blended_color);
     }
 
     fn get_bg_tile_idx(self: *Lcd, tile_x: u16, tile_y: u16) u8 {
@@ -296,8 +307,10 @@ pub const Lcd = struct {
     }
 
     fn get_obj_pixel(self: *Lcd, obj: OamEntry, px: u8, ly: u8) u8 {
-        std.debug.assert(obj.x <= px and (px - obj.x) < 8);
-        std.debug.assert(obj.y <= ly and (ly - obj.y) < 16);
+        std.debug.assert(obj.x <= px);
+        std.debug.assert((px - obj.x) < 8);
+        std.debug.assert(obj.y <= ly);
+        std.debug.assert((ly - obj.y) < 16);
 
         var tile_x = px - obj.x;
         var tile_y = ly - obj.y;
@@ -368,8 +381,7 @@ pub const Lcd = struct {
         }
     }
 
-    fn set_stat_ly(self: *Lcd, ly: u8) void {
-        self.ly = ly;
+    fn update_stat_ly(self: *Lcd, ly: u8) void {
         const lyc_eq = ly == self.lyc;
         self.stat.lyc_eq = @intFromBool(lyc_eq);
 
