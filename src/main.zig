@@ -126,6 +126,12 @@ pub fn main() !void {
     };
     defer cartridge.deinit();
 
+    if (args.next()) |second_arg| {
+        if (std.mem.eql(u8, second_arg, "dump_header")) {
+            return;
+        }
+    }
+
     var bus = Bus{};
     var cpu = Cpu{ .bus = &bus };
     bus.cartridge = &cartridge;
